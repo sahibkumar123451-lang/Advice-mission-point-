@@ -1,0 +1,248 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 1. Global Safety Net (Default Deny)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // 2. Hardened Primitives
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isBootstrappedAdmin() {
+      return isVerifiedUser() && request.auth.token.email == 'sahibkumar123451@gmail.com';
+    }
+
+    function isAdmin() {
+      return isBootstrappedAdmin() || (
+        isVerifiedUser() &&
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    function isOwner(uid) {
+      return isVerifiedUser() && request.auth.uid == uid;
+    }
+
+    // 3. Entity Validation Blueprints
+    function isValidCoachingInfo(data) {
+      return data.keys().hasAll(['name', 'tagline', 'address', 'googleMapsUrl', 'updatedAt']) &&
+        data.keys().hasOnly([
+          'name', 'tagline', 'welcomeHeadline', 'welcomeSubtitle',
+          'aboutHeading', 'aboutDescription', 'classesRangeText',
+          'address', 'googleMapsUrl', 'phone', 'email', 'officeHours',
+          'heroMediaUrl', 'heroMediaType', 'updatedAt'
+        ]) &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 120 &&
+        data.tagline is string && data.tagline.size() >= 1 && data.tagline.size() <= 200 &&
+        (!('welcomeHeadline' in data) || (data.welcomeHeadline is string && data.welcomeHeadline.size() <= 240)) &&
+        (!('welcomeSubtitle' in data) || (data.welcomeSubtitle is string && data.welcomeSubtitle.size() <= 600)) &&
+        (!('aboutHeading' in data) || (data.aboutHeading is string && data.aboutHeading.size() <= 200)) &&
+        (!('aboutDescription' in data) || (data.aboutDescription is string && data.aboutDescription.size() <= 3000)) &&
+        (!('classesRangeText' in data) || (data.classesRangeText is string && data.classesRangeText.size() <= 300)) &&
+        data.address is string && data.address.size() >= 1 && data.address.size() <= 300 &&
+        data.googleMapsUrl is string && data.googleMapsUrl.size() >= 1 && data.googleMapsUrl.size() <= 600 &&
+        (!('phone' in data) || (data.phone is string && data.phone.size() <= 80)) &&
+        (!('email' in data) || (data.email is string && data.email.size() <= 160)) &&
+        (!('officeHours' in data) || (data.officeHours is string && data.officeHours.size() <= 160)) &&
+        (!('heroMediaUrl' in data) || (data.heroMediaUrl is string && data.heroMediaUrl.size() <= 800000)) &&
+        (!('heroMediaType' in data) || data.heroMediaType in ['image', 'video']) &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidSocialLinks(data) {
+      return data.keys().hasAll(['whatsapp', 'instagram', 'facebook', 'youtube', 'updatedAt']) &&
+        data.keys().hasOnly(['whatsapp', 'instagram', 'facebook', 'youtube', 'updatedAt']) &&
+        data.whatsapp is string && data.whatsapp.size() >= 1 && data.whatsapp.size() <= 500 &&
+        data.instagram is string && data.instagram.size() >= 1 && data.instagram.size() <= 500 &&
+        data.facebook is string && data.facebook.size() >= 1 && data.facebook.size() <= 500 &&
+        data.youtube is string && data.youtube.size() >= 1 && data.youtube.size() <= 500 &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidTeacherProfile(data) {
+      return data.keys().hasAll(['name', 'introduction', 'qualifications', 'experience', 'classesTaught', 'updatedAt']) &&
+        data.keys().hasOnly([
+          'name', 'roleTitle', 'photoUrl', 'introduction',
+          'qualifications', 'experience', 'skills',
+          'classesTaught', 'subjectsTaught', 'updatedAt'
+        ]) &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 160 &&
+        (!('roleTitle' in data) || (data.roleTitle is string && data.roleTitle.size() <= 200)) &&
+        (!('photoUrl' in data) || (data.photoUrl is string && data.photoUrl.size() <= 800000)) &&
+        data.introduction is string && data.introduction.size() >= 1 && data.introduction.size() <= 3000 &&
+        data.qualifications is string && data.qualifications.size() >= 1 && data.qualifications.size() <= 400 &&
+        data.experience is string && data.experience.size() >= 1 && data.experience.size() <= 400 &&
+        data.classesTaught is string && data.classesTaught.size() >= 1 && data.classesTaught.size() <= 200 &&
+        (!('skills' in data) || (
+          data.skills is list && data.skills.size() <= 25 &&
+          (data.skills.size() == 0 || (data.skills[0] is string && data.skills[0].size() <= 160))
+        )) &&
+        (!('subjectsTaught' in data) || (
+          data.subjectsTaught is list && data.subjectsTaught.size() <= 25 &&
+          (data.subjectsTaught.size() == 0 || (data.subjectsTaught[0] is string && data.subjectsTaught[0].size() <= 160))
+        )) &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidGalleryItem(data, itemId) {
+      return data.keys().hasAll(['id', 'title', 'category', 'mediaType', 'mediaUrl', 'published', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly([
+          'id', 'title', 'caption', 'category', 'mediaType',
+          'mediaUrl', 'thumbnailUrl', 'published', 'createdAt', 'updatedAt'
+        ]) &&
+        data.id == itemId &&
+        isValidId(data.id) &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 200 &&
+        (!('caption' in data) || (data.caption is string && data.caption.size() <= 1000)) &&
+        data.category in ['coaching', 'classroom', 'activities', 'events', 'videos', 'pdfs'] &&
+        data.mediaType in ['image', 'video', 'pdf'] &&
+        data.mediaUrl is string && data.mediaUrl.size() >= 1 && data.mediaUrl.size() <= 800000 &&
+        (!('thumbnailUrl' in data) || (data.thumbnailUrl is string && data.thumbnailUrl.size() <= 800000)) &&
+        data.published is bool &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidLearningResource(data, itemId) {
+      return data.keys().hasAll(['id', 'title', 'topicArea', 'published', 'updatedAt']) &&
+        data.keys().hasOnly([
+          'id', 'title', 'topicArea', 'summary', 'content',
+          'languageNote', 'keyFormulas', 'pdfUrl', 'pdfName', 'published', 'updatedAt'
+        ]) &&
+        data.id == itemId &&
+        isValidId(data.id) &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 200 &&
+        data.topicArea is string && data.topicArea.size() >= 1 && data.topicArea.size() <= 120 &&
+        (!('summary' in data) || (data.summary is string && data.summary.size() <= 1000)) &&
+        (!('content' in data) || (data.content is string && data.content.size() <= 12000)) &&
+        (!('languageNote' in data) || (data.languageNote is string && data.languageNote.size() <= 120)) &&
+        (!('keyFormulas' in data) || (
+          data.keyFormulas is list && data.keyFormulas.size() <= 25 &&
+          (data.keyFormulas.size() == 0 || (data.keyFormulas[0] is string && data.keyFormulas[0].size() <= 240))
+        )) &&
+        (!('pdfUrl' in data) || (data.pdfUrl is string && data.pdfUrl.size() <= 800000)) &&
+        (!('pdfName' in data) || (data.pdfName is string && data.pdfName.size() <= 240)) &&
+        data.published is bool &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidAdminUser(data, uid) {
+      return data.keys().hasAll(['uid', 'email', 'createdAt']) &&
+        data.keys().hasOnly(['uid', 'email', 'createdAt']) &&
+        data.uid == uid &&
+        isValidId(data.uid) &&
+        data.email is string && data.email.size() >= 3 && data.email.size() <= 200 &&
+        data.createdAt is timestamp;
+    }
+
+    // 4. Collection Rules
+    match /test/{testId} {
+      allow get: if isValidId(testId) && testId == 'connection';
+    }
+
+    match /admins/{uid} {
+      allow get: if isValidId(uid) && (isOwner(uid) || isBootstrappedAdmin());
+      allow create: if isBootstrappedAdmin() && isValidId(uid) &&
+        isValidAdminUser(incoming(), uid) && incoming().createdAt == request.time;
+      allow update: if isBootstrappedAdmin() && isValidId(uid) &&
+        isValidAdminUser(incoming(), uid) &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['email']);
+      allow delete: if isBootstrappedAdmin() && isValidId(uid);
+    }
+
+    match /coachingConfig/{configId} {
+      allow get: if isValidId(configId) && configId == 'main';
+      allow create: if isAdmin() && isValidId(configId) && configId == 'main' &&
+        isValidCoachingInfo(incoming()) && incoming().updatedAt == request.time;
+      allow update: if isAdmin() && isValidId(configId) && configId == 'main' &&
+        isValidCoachingInfo(incoming()) && incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'name', 'tagline', 'welcomeHeadline', 'welcomeSubtitle',
+          'aboutHeading', 'aboutDescription', 'classesRangeText',
+          'address', 'googleMapsUrl', 'phone', 'email', 'officeHours',
+          'heroMediaUrl', 'heroMediaType', 'updatedAt'
+        ]);
+      allow delete: if isAdmin() && isValidId(configId);
+    }
+
+    match /socialLinksConfig/{configId} {
+      allow get: if isValidId(configId) && configId == 'main';
+      allow create: if isAdmin() && isValidId(configId) && configId == 'main' &&
+        isValidSocialLinks(incoming()) && incoming().updatedAt == request.time;
+      allow update: if isAdmin() && isValidId(configId) && configId == 'main' &&
+        isValidSocialLinks(incoming()) && incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'whatsapp', 'instagram', 'facebook', 'youtube', 'updatedAt'
+        ]);
+      allow delete: if isAdmin() && isValidId(configId);
+    }
+
+    match /teacherConfig/{configId} {
+      allow get: if isValidId(configId) && configId == 'main';
+      allow create: if isAdmin() && isValidId(configId) && configId == 'main' &&
+        isValidTeacherProfile(incoming()) && incoming().updatedAt == request.time;
+      allow update: if isAdmin() && isValidId(configId) && configId == 'main' &&
+        isValidTeacherProfile(incoming()) && incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'name', 'roleTitle', 'photoUrl', 'introduction',
+          'qualifications', 'experience', 'skills',
+          'classesTaught', 'subjectsTaught', 'updatedAt'
+        ]);
+      allow delete: if isAdmin() && isValidId(configId);
+    }
+
+    match /galleryItems/{itemId} {
+      allow get: if isValidId(itemId) && (existing().published == true || isAdmin());
+      allow list: if resource.data.published == true || isBootstrappedAdmin();
+      allow create: if isAdmin() && isValidId(itemId) &&
+        isValidGalleryItem(incoming(), itemId) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isAdmin() && isValidId(itemId) &&
+        isValidGalleryItem(incoming(), itemId) &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'title', 'caption', 'category', 'mediaType',
+          'mediaUrl', 'thumbnailUrl', 'published', 'updatedAt'
+        ]);
+      allow delete: if isAdmin() && isValidId(itemId);
+    }
+
+    match /learningHubItems/{itemId} {
+      allow get: if isValidId(itemId) && (existing().published == true || isAdmin());
+      allow list: if resource.data.published == true || isBootstrappedAdmin();
+      allow create: if isAdmin() && isValidId(itemId) &&
+        isValidLearningResource(incoming(), itemId) &&
+        incoming().updatedAt == request.time;
+      allow update: if isAdmin() && isValidId(itemId) &&
+        isValidLearningResource(incoming(), itemId) &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'title', 'topicArea', 'summary', 'content',
+          'languageNote', 'keyFormulas', 'pdfUrl', 'pdfName', 'published', 'updatedAt'
+        ]);
+      allow delete: if isAdmin() && isValidId(itemId);
+    }
+  }
+}

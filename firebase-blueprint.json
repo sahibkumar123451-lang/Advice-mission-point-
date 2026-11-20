@@ -1,0 +1,132 @@
+{
+  "entities": {
+    "CoachingInfo": {
+      "title": "CoachingInfo",
+      "description": "Public institute branding, welcome copy, location, contact details, and hero media.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "tagline": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "welcomeHeadline": { "type": "string", "minLength": 1, "maxLength": 240 },
+        "welcomeSubtitle": { "type": "string", "maxLength": 600 },
+        "aboutHeading": { "type": "string", "maxLength": 200 },
+        "aboutDescription": { "type": "string", "maxLength": 3000 },
+        "classesRangeText": { "type": "string", "maxLength": 300 },
+        "address": { "type": "string", "minLength": 1, "maxLength": 300 },
+        "googleMapsUrl": { "type": "string", "minLength": 1, "maxLength": 600 },
+        "phone": { "type": "string", "maxLength": 80 },
+        "email": { "type": "string", "maxLength": 160 },
+        "officeHours": { "type": "string", "maxLength": 160 },
+        "heroMediaUrl": { "type": "string", "maxLength": 800000 },
+        "heroMediaType": { "type": "string", "enum": ["image", "video"] },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "tagline", "address", "googleMapsUrl", "updatedAt"]
+    },
+    "SocialLinks": {
+      "title": "SocialLinks",
+      "description": "Coaching social media profile URLs editable from the Admin Panel.",
+      "type": "object",
+      "properties": {
+        "whatsapp": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "instagram": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "facebook": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "youtube": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["whatsapp", "instagram", "facebook", "youtube", "updatedAt"]
+    },
+    "TeacherProfile": {
+      "title": "TeacherProfile",
+      "description": "Lead mentor profile details, qualifications, skills, and subjects taught.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "roleTitle": { "type": "string", "maxLength": 200 },
+        "photoUrl": { "type": "string", "maxLength": 800000 },
+        "introduction": { "type": "string", "minLength": 1, "maxLength": 3000 },
+        "qualifications": { "type": "string", "minLength": 1, "maxLength": 400 },
+        "experience": { "type": "string", "minLength": 1, "maxLength": 400 },
+        "skills": { "type": "array" },
+        "classesTaught": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "subjectsTaught": { "type": "array" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "introduction", "qualifications", "experience", "classesTaught", "updatedAt"]
+    },
+    "GalleryItem": {
+      "title": "GalleryItem",
+      "description": "Coaching photo, video, or PDF item displayed in the gallery.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "caption": { "type": "string", "maxLength": 1000 },
+        "category": { "type": "string", "enum": ["coaching", "classroom", "activities", "events", "videos", "pdfs"] },
+        "mediaType": { "type": "string", "enum": ["image", "video", "pdf"] },
+        "mediaUrl": { "type": "string", "minLength": 1, "maxLength": 800000 },
+        "thumbnailUrl": { "type": "string", "maxLength": 800000 },
+        "published": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "title", "category", "mediaType", "mediaUrl", "published", "createdAt", "updatedAt"]
+    },
+    "LearningResource": {
+      "title": "LearningResource",
+      "description": "Bilingual study note, formula summary, or downloadable PDF in Advice Mission Learning Hub.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "topicArea": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "summary": { "type": "string", "maxLength": 1000 },
+        "content": { "type": "string", "maxLength": 12000 },
+        "languageNote": { "type": "string", "maxLength": 120 },
+        "keyFormulas": { "type": "array" },
+        "pdfUrl": { "type": "string", "maxLength": 800000 },
+        "pdfName": { "type": "string", "maxLength": 240 },
+        "published": { "type": "boolean" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "title", "topicArea", "published", "updatedAt"]
+    },
+    "AdminUser": {
+      "title": "AdminUser",
+      "description": "Authorized coaching administrator document keyed by Firebase Auth UID.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "email": { "type": "string", "minLength": 3, "maxLength": 200 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/coachingConfig/{configId}": {
+      "schema": { "$ref": "#/entities/CoachingInfo" },
+      "description": "Singleton coaching information document ('main')."
+    },
+    "/socialLinksConfig/{configId}": {
+      "schema": { "$ref": "#/entities/SocialLinks" },
+      "description": "Singleton social media links document ('main')."
+    },
+    "/teacherConfig/{configId}": {
+      "schema": { "$ref": "#/entities/TeacherProfile" },
+      "description": "Singleton lead teacher profile document ('main')."
+    },
+    "/galleryItems/{itemId}": {
+      "schema": { "$ref": "#/entities/GalleryItem" },
+      "description": "Published and draft gallery photos, videos, and PDFs."
+    },
+    "/learningHubItems/{itemId}": {
+      "schema": { "$ref": "#/entities/LearningResource" },
+      "description": "Published and draft study resources and PDFs in the Learning Hub."
+    },
+    "/admins/{uid}": {
+      "schema": { "$ref": "#/entities/AdminUser" },
+      "description": "Authorized admin accounts for Cloud Firestore writes."
+    }
+  }
+}

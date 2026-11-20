@@ -1,0 +1,8 @@
+{
+  "name": "Advice Mission Point",
+  "description": "Official coaching website for Advice Mission Point (Ramauli, Darbhanga, Bihar, India 847101) — Class 1 to 12 mentorship, Advice Mission AI doubt solver, Learning Hub, Gallery, and Admin Panel.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

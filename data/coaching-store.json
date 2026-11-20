@@ -1,0 +1,160 @@
+{
+  "coaching": {
+    "name": "Advice Mission Point",
+    "tagline": "To Struggle, Take Success.",
+    "welcomeHeadline": "Building Strong Foundations for Every Learner from Class 1 to Class 12.",
+    "welcomeSubtitle": "Disciplined classroom mentorship, concept clarity in simple Hindi & English, and personalized doubt support at Ramauli, Darbhanga (847101).",
+    "aboutHeading": "Dedicated Academic Mentorship in Ramauli, Darbhanga",
+    "aboutDescription": "Advice Mission Point is a community-trusted coaching institute located in Ramauli, Darbhanga, Bihar, India 847101. Here, students from Class 1 to Class 12 are taught in an encouraging, structured environment that prioritizes conceptual mastery, regular practice assessments, and personal attention. Rather than rote memorization, every learner is guided step-by-step from foundational school basics to board-level academic excellence.",
+    "classesRangeText": "Students from Class 1 to Class 12 are taught here with dedicated guidance.",
+    "address": "Ramauli, Darbhanga, Bihar, India 847101",
+    "googleMapsUrl": "https://www.google.com/maps/search/?api=1&query=Ramauli+Darbhanga+Bihar+India+847101",
+    "phone": "+91 98000 00000 (Update in Admin)",
+    "email": "contact@advicemissionpoint.in",
+    "officeHours": "Mon – Sat · 6:30 AM – 6:30 PM",
+    "heroMediaUrl": "/src/assets/images/hero_coaching_campus_1795115509590.jpg",
+    "heroMediaType": "image"
+  },
+  "socialLinks": {
+    "whatsapp": "https://wa.me/919800000000",
+    "instagram": "https://www.instagram.com/advicemissionpoint/",
+    "facebook": "https://www.facebook.com/advicemissionpoint/",
+    "youtube": "https://www.youtube.com/@advicemissionpoint"
+  },
+  "teacher": {
+    "name": "Mentor Name (Editable Placeholder)",
+    "roleTitle": "Founder & Lead Educator — Advice Mission Point",
+    "photoUrl": "/src/assets/images/teacher_portrait_1795115509637.jpg",
+    "introduction": "Dedicated educator committed to transforming everyday student effort into confident academic performance. Passionate about breaking complex concepts into clear, relatable Hindi and English explanations for learners across Class 1 to Class 12.",
+    "qualifications": "M.Sc., B.Ed. (Replace with actual degree details in Admin Panel)",
+    "experience": "8+ Years of Classroom Teaching & Mentorship (Placeholder)",
+    "skills": [
+      "Bilingual Concept Explanation (Hindi & English)",
+      "Board Exam Preparation & Answer Writing",
+      "Individual Doubt Clearing",
+      "Weekly Practice & Progress Tracking"
+    ],
+    "classesTaught": "Class 1 to Class 12",
+    "subjectsTaught": [
+      "Mathematics",
+      "Science (Physics, Chemistry, Biology)",
+      "English Grammar & Literature",
+      "Social Studies & General Foundation"
+    ]
+  },
+  "gallery": [
+    {
+      "id": "gal-1",
+      "title": "Main Classroom Study Session",
+      "caption": "Morning batch focused on problem solving and concept clarity at Advice Mission Point, Ramauli.",
+      "category": "coaching",
+      "mediaType": "image",
+      "mediaUrl": "/src/assets/images/hero_coaching_campus_1795115509590.jpg",
+      "published": true,
+      "createdAt": "2026-10-12T09:00:00.000Z"
+    },
+    {
+      "id": "gal-2",
+      "title": "Interactive Board & Concept Lecture",
+      "caption": "Step-by-step whiteboard derivations and attentive note-taking in our senior classroom.",
+      "category": "classroom",
+      "mediaType": "image",
+      "mediaUrl": "/src/assets/images/gallery_classroom_lecture_1795115510111.jpg",
+      "published": true,
+      "createdAt": "2026-10-18T10:30:00.000Z"
+    },
+    {
+      "id": "gal-3",
+      "title": "Hands-On Geometry & Science Workshop",
+      "caption": "Practical model exploration helping foundational students visualize triangles, solids, and measurements.",
+      "category": "activities",
+      "mediaType": "image",
+      "mediaUrl": "/src/assets/images/gallery_science_activity_1795115509803.jpg",
+      "published": true,
+      "createdAt": "2026-10-25T11:15:00.000Z"
+    },
+    {
+      "id": "gal-4",
+      "title": "Annual Academic Merit Recognition",
+      "caption": "Celebrating student dedication and milestone achievements during our annual coaching ceremony.",
+      "category": "events",
+      "mediaType": "image",
+      "mediaUrl": "/src/assets/images/gallery_annual_ceremony_1795115525503.jpg",
+      "published": true,
+      "createdAt": "2026-11-02T14:00:00.000Z"
+    },
+    {
+      "id": "gal-5",
+      "title": "Coaching Orientation & Classroom Tour Video",
+      "caption": "A quick orientation clip highlighting our classroom environment and study discipline at Ramauli, Darbhanga.",
+      "category": "videos",
+      "mediaType": "video",
+      "mediaUrl": "/src/assets/videos/coaching_orientation.mp4",
+      "thumbnailUrl": "/src/assets/images/gallery_classroom_lecture_1795115510111.jpg",
+      "published": true,
+      "createdAt": "2026-11-05T16:20:00.000Z"
+    }
+  ],
+  "learningHub": [
+    {
+      "id": "hub-1",
+      "title": "Newton’s Laws of Motion — Bilingual Quick Guide",
+      "topicArea": "Science & Physics",
+      "summary": "Simple Hindi and English breakdown of inertia, F = ma, and action-reaction with everyday Bihar village & daily-life examples.",
+      "content": "1. First Law (जड़त्व का नियम / Law of Inertia): An object stays at rest or keeps moving at constant speed unless an external force acts on it.\n\nExample: When a bus suddenly starts moving, passengers lean backward because their body wants to stay at rest.\n\n2. Second Law (F = m × a): Force equals mass multiplied by acceleration. Pushing a heavy cart requires more force than pushing an empty bicycle.\n\n3. Third Law (क्रिया-प्रतिक्रिया का नियम): Every action has an equal and opposite reaction. When you jump off a boat onto the river bank, the boat pushes backward.",
+      "languageNote": "Hindi + English Bilingual",
+      "keyFormulas": [
+        "F = m × a",
+        "p = m × v",
+        "F₁₂ = -F₂₁"
+      ],
+      "published": true,
+      "updatedAt": "2026-11-10T08:00:00.000Z"
+    },
+    {
+      "id": "hub-2",
+      "title": "Algebraic Identities & Quadratic Roots Sheet",
+      "topicArea": "Mathematics",
+      "summary": "Essential expansion formulas and discriminant rules to solve algebraic questions cleanly without sign mistakes.",
+      "content": "Core Identities (मुख्य बीजगणितीय सूत्र):\n• (a + b)² = a² + 2ab + b²\n• (a - b)² = a² - 2ab + b²\n• a² - b² = (a + b)(a - b)\n• (a + b)³ = a³ + b³ + 3ab(a + b)\n\nQuadratic Formula (द्विघात सूत्र):\nFor ax² + bx + c = 0, x = [-b ± √(b² - 4ac)] / 2a.\n• If D = b² - 4ac > 0: Two distinct real roots.\n• If D = 0: Two equal real roots.\n• If D < 0: No real roots.",
+      "languageNote": "Hindi + English Bilingual",
+      "keyFormulas": [
+        "(a + b)² = a² + 2ab + b²",
+        "a² - b² = (a + b)(a - b)",
+        "D = b² - 4ac"
+      ],
+      "published": true,
+      "updatedAt": "2026-11-12T08:00:00.000Z"
+    },
+    {
+      "id": "hub-3",
+      "title": "English Tenses — 12-Structure Comparison Table",
+      "topicArea": "English Grammar",
+      "summary": "Clear Hindi-to-English sentence patterns for Present, Past, and Future tenses to strengthen writing & translation.",
+      "content": "Present Simple (ता है / ती है): Subject + V1(s/es) + Object.\nExample: वह रोज़ पढ़ता है → He studies daily.\n\nPresent Continuous (रहा है / रही है): Subject + is/am/are + V1+ing.\nExample: बच्चे प्रश्न हल कर रहे हैं → Students are solving questions.\n\nPast Simple (आ / ई / ए): Subject + V2 + Object.\nExample: हमने कल अभ्यास पूरा किया → We completed the practice yesterday.\n\nFuture Simple (गा / गी / गे): Subject + will + V1 + Object.\nExample: आप मेहनत से सफल होंगे → You will succeed through hard work.",
+      "languageNote": "Hindi + English Bilingual",
+      "keyFormulas": [
+        "S + V1(s/es) + O",
+        "S + is/am/are + V-ing",
+        "S + V2 + O",
+        "S + will + V1 + O"
+      ],
+      "published": true,
+      "updatedAt": "2026-11-14T08:00:00.000Z"
+    },
+    {
+      "id": "hub-4",
+      "title": "Photosynthesis & Cellular Respiration Basics",
+      "topicArea": "Biology & EVS",
+      "summary": "How green plants prepare food using sunlight, water, and CO₂, explained in clear short points.",
+      "content": "Photosynthesis (प्रकाश संश्लेषण) is the process by which green plants make glucose using sunlight in chlorophyll.\n\nEquation: 6CO₂ + 6H₂O —(Sunlight & Chlorophyll)→ C₆H₁₂O₆ + 6O₂.\n\nKey Steps:\n1. Absorption of sunlight by chlorophyll in leaves.\n2. Conversion of light energy to chemical energy & splitting of water molecules.\n3. Reduction of carbon dioxide into carbohydrates (glucose).\n\nTip: Remember that oxygen is released as a life-supporting byproduct!",
+      "languageNote": "Hindi + English Bilingual",
+      "keyFormulas": [
+        "6CO₂ + 6H₂O → C₆H₁₂O₆ + 6O₂"
+      ],
+      "published": true,
+      "updatedAt": "2026-11-15T08:00:00.000Z"
+    }
+  ],
+  "enquiries": []
+}
