@@ -364,7 +364,7 @@ export function normalizeAiConversationHistory(
     }
   }
 
-  return merged.slice(-12).map((m) => ({
+  return merged.slice(-8).map((m) => ({
     role: m.role,
     parts: [{ text: m.text }],
   }));
@@ -480,12 +480,130 @@ export function isTransientGeminiApiError(error: unknown): boolean {
     lower.includes('timeout') ||
     lower.includes('timed out') ||
     lower.includes('deadline_exceeded') ||
+    lower.includes('abort') ||
     lower.includes('econnreset') ||
     lower.includes('etimedout') ||
     lower.includes('fetch') ||
     lower.includes('network') ||
     lower.includes('empty model response')
   );
+}
+
+export function isGeminiKeyAuthError(error: unknown): boolean {
+  const raw =
+    error instanceof Error
+      ? `${(error as { status?: unknown; code?: unknown }).status ?? ''} ${error.message}`
+      : typeof error === 'object' && error !== null
+        ? JSON.stringify(error)
+        : String(error ?? '');
+  const lower = raw.toLowerCase();
+  return (
+    lower.includes('api_key_invalid') ||
+    lower.includes('permission_denied') ||
+    lower.includes('access_token_scope_insufficient') ||
+    /\b403\b/.test(lower)
+  );
+}
+
+export interface MultiModelRouteSpec {
+  model: string;
+  label: string;
+  thinkingLevel: 'LOW' | 'MINIMAL';
+  useCompactLiteParams: boolean;
+  timeoutMs: number;
+}
+
+export interface MultiModelFallbackOptions<R extends MultiModelRouteSpec> {
+  routes: R[];
+  maxAttempts?: number;
+  baseDelayMs?: number;
+  maxDelayMs?: number;
+  shouldAbort?: () => boolean;
+  onStatus?: (info: {
+    attempt: number;
+    route: R;
+    reason: 'failover' | 'backoff';
+    delayMs: number;
+    error: unknown;
+  }) => void;
+}
+
+export async function executeMultiModelWithFallback<T, R extends MultiModelRouteSpec>(
+  routesToRun: (route: R, attemptIndex: number) => Promise<T>,
+  options: MultiModelFallbackOptions<R>,
+): Promise<{ result: T; route: R; attempt: number }> {
+  const {
+    routes,
+    maxAttempts = 4,
+    baseDelayMs = 450,
+    maxDelayMs = 2400,
+    shouldAbort,
+    onStatus,
+  } = options;
+
+  if (!routes.length) {
+    throw new Error('No Gemini model routes configured.');
+  }
+
+  let lastError: unknown;
+  let backoffRound = 0;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    if (shouldAbort?.()) {
+      throw lastError ?? new Error('Request cancelled.');
+    }
+
+    const route = routes[attempt % routes.length];
+    try {
+      const result = await routesToRun(route, attempt);
+      return { result, route, attempt };
+    } catch (error) {
+      lastError = error;
+
+      // Stop immediately on client disconnect or invalid API key / auth error
+      if (shouldAbort?.() || isGeminiKeyAuthError(error)) {
+        throw error;
+      }
+
+      const isLastAttempt = attempt >= maxAttempts - 1;
+      if (isLastAttempt) {
+        throw error;
+      }
+
+      const nextRoute = routes[(attempt + 1) % routes.length];
+      const switchingToDistinctModel = nextRoute.model !== route.model;
+      const canFailoverOrRetry =
+        isTransientGeminiApiError(error) ||
+        switchingToDistinctModel;
+
+      if (!canFailoverOrRetry) {
+        throw error;
+      }
+
+      // Instant failover (0ms wait) on the first switch to a distinct secondary model;
+      // apply exponential backoff with gentle jitter on subsequent traffic-spike rounds.
+      let delayMs = 0;
+      let reason: 'failover' | 'backoff' = 'failover';
+
+      if (attempt === 0 && switchingToDistinctModel) {
+        delayMs = 0;
+        reason = 'failover';
+      } else {
+        const expDelay = Math.min(maxDelayMs, baseDelayMs * Math.pow(2, backoffRound));
+        const jitter = Math.min(200, Math.round(expDelay * 0.2));
+        delayMs = expDelay + (baseDelayMs >= 50 ? Math.floor(Math.random() * jitter) : 0);
+        backoffRound += 1;
+        reason = 'backoff';
+      }
+
+      onStatus?.({ attempt: attempt + 1, route: nextRoute, reason, delayMs, error });
+      if (delayMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
+    }
+  }
+
+  throw lastError;
 }
 
 export function formatFriendlyAiError(rawMessage: string): string {
@@ -508,7 +626,7 @@ export function formatFriendlyAiError(rawMessage: string): string {
     lower.includes('high demand') ||
     lower.includes('overloaded')
   ) {
-    return 'The AI service experienced heavy traffic and could not reply yet. Your question is saved — click Ask Again to send it once more (उच्च ट्रैफ़िक के कारण उत्तर नहीं मिल सका, कृपया Ask Again दबाएं).';
+    return 'The AI service experienced heavy traffic across backup models. Your question is saved — click Ask Again to send it once more (उच्च ट्रैफ़िक के कारण उत्तर नहीं मिल सका, कृपया Ask Again दबाएं).';
   }
   if (
     lower.includes('timeout') ||

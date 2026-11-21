@@ -5,6 +5,7 @@ import {
   buildSiteDataWithDraftEdits,
   clearAdminDraftFromStorage,
   detectUploadCategoryAndType,
+  executeMultiModelWithFallback,
   filterAdminGalleryItems,
   filterAdminLearningResources,
   filterGalleryItems,
@@ -408,4 +409,85 @@ test('buildSiteDataWithDraftEdits and draft storage preserve unsaved local edits
   clearAdminDraftFromStorage();
 });
 
+test('executeMultiModelWithFallback performs instant failover to secondary model on 503/429/timeout and applies backoff on spikes', async () => {
+  const routes = [
+    {
+      model: 'gemini-4-hydrogen',
+      label: 'Primary Flash',
+      thinkingLevel: 'LOW' as const,
+      useCompactLiteParams: false,
+      timeoutMs: 8000,
+    },
+    {
+      model: 'gemini-3.1-flash-lite',
+      label: 'Secondary Flash Lite',
+      thinkingLevel: 'MINIMAL' as const,
+      useCompactLiteParams: true,
+      timeoutMs: 8000,
+    },
+  ];
+
+  // Case 1: Primary throws 503 -> instant failover (0ms delay) to secondary succeeds
+  const calledModels1: string[] = [];
+  const statuses1: Array<{ reason: string; delayMs: number; nextModel: string }> = [];
+  const res1 = await executeMultiModelWithFallback(
+    async (route) => {
+      calledModels1.push(route.model);
+      if (route.model === 'gemini-4-hydrogen') {
+        throw new Error('503 Service Unavailable');
+      }
+      return 'Answer from Flash Lite';
+    },
+    {
+      routes,
+      maxAttempts: 4,
+      baseDelayMs: 5,
+      onStatus: (info) =>
+        statuses1.push({ reason: info.reason, delayMs: info.delayMs, nextModel: info.route.model }),
+    },
+  );
+  assert.equal(res1.result, 'Answer from Flash Lite');
+  assert.equal(res1.route.model, 'gemini-3.1-flash-lite');
+  assert.deepEqual(calledModels1, ['gemini-4-hydrogen', 'gemini-3.1-flash-lite']);
+  assert.equal(statuses1[0].reason, 'failover');
+  assert.equal(statuses1[0].delayMs, 0);
+
+  // Case 2: Both hit initial spike (429 + timeout), attempt 3 succeeds with exponential backoff
+  const calledModels2: string[] = [];
+  const statuses2: Array<{ reason: string; delayMs: number }> = [];
+  const res2 = await executeMultiModelWithFallback(
+    async (route, attemptIdx) => {
+      calledModels2.push(route.model);
+      if (attemptIdx === 0) throw new Error('429 Too Many Requests');
+      if (attemptIdx === 1) throw new Error('Request timeout (504)');
+      return 'Recovered on spike retry';
+    },
+    {
+      routes,
+      maxAttempts: 4,
+      baseDelayMs: 5,
+      maxDelayMs: 50,
+      onStatus: (info) => statuses2.push({ reason: info.reason, delayMs: info.delayMs }),
+    },
+  );
+  assert.equal(res2.result, 'Recovered on spike retry');
+  assert.equal(calledModels2.length, 3);
+  assert.equal(statuses2[0].reason, 'failover');
+  assert.equal(statuses2[0].delayMs, 0);
+  assert.equal(statuses2[1].reason, 'backoff');
+  assert.ok(statuses2[1].delayMs >= 5);
+
+  // Case 3: API_KEY_INVALID aborts immediately without pointless retries
+  let authAttempts = 0;
+  await assert.rejects(
+    executeMultiModelWithFallback(
+      async () => {
+        authAttempts += 1;
+        throw new Error('403 API_KEY_INVALID');
+      },
+      { routes, maxAttempts: 4, baseDelayMs: 1 },
+    ),
+  );
+  assert.equal(authAttempts, 1);
+});
 

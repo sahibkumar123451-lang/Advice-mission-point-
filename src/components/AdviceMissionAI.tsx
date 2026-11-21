@@ -56,6 +56,7 @@ export function AdviceMissionAI({
   const [input, setInput] = useState('');
   const [languagePref, setLanguagePref] = useState<'bilingual' | 'english' | 'hindi'>('bilingual');
   const [loading, setLoading] = useState(false);
+  const [statusNotice, setStatusNotice] = useState<string>('Preparing your fast answer...');
   const [error, setError] = useState<string | null>(null);
   const [lastFailedQuestion, setLastFailedQuestion] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -79,7 +80,7 @@ export function AdviceMissionAI({
     if (threadRef.current) {
       threadRef.current.scrollTop = threadRef.current.scrollHeight;
     }
-  }, [messages, loading]);
+  }, [messages, loading, statusNotice]);
 
   async function askQuestion(
     questionText: string,
@@ -90,6 +91,7 @@ export function AdviceMissionAI({
 
     setError(null);
     setLastFailedQuestion(null);
+    setStatusNotice('Preparing your fast answer...');
 
     const lastMsg = messages[messages.length - 1];
     const shouldReuseBubble =
@@ -115,16 +117,29 @@ export function AdviceMissionAI({
     }
     setLoading(true);
 
+    const payload = {
+      messages: nextMessages.map((m) => ({ role: m.role, text: m.text })),
+      languagePreference: languagePref,
+    };
+
+    let receivedAnyDelta = false;
+    const delayTimer = window.setTimeout(() => {
+      if (!receivedAnyDelta) {
+        setStatusNotice((prev) =>
+          prev === 'Preparing your fast answer...'
+            ? 'Checking fastest available AI model — your answer is on the way...'
+            : prev,
+        );
+      }
+    }, 2500);
+
     try {
       const response = await retryWithExponentialBackoff(
         async () => {
           const res = await fetch('/api/ai/stream', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              messages: nextMessages.map((m) => ({ role: m.role, text: m.text })),
-              languagePreference: languagePref,
-            }),
+            body: JSON.stringify(payload),
           });
           if (res.status === 502 || res.status === 503 || res.status === 504 || res.status === 429) {
             throw new Error(`HTTP ${res.status}`);
@@ -132,8 +147,12 @@ export function AdviceMissionAI({
           return res;
         },
         {
-          maxRetries: 1,
-          baseDelayMs: 500,
+          maxRetries: 2,
+          baseDelayMs: 400,
+          maxDelayMs: 1600,
+          onRetry: () => {
+            setStatusNotice('High traffic detected — switching gently to backup route...');
+          },
           shouldRetry: (err) => {
             const msg = err instanceof Error ? err.message.toLowerCase() : '';
             return (
@@ -156,10 +175,7 @@ export function AdviceMissionAI({
           data = {};
         }
         setLastFailedQuestion(trimmed);
-        setError(
-          data.error ||
-            formatFriendlyAiError(`HTTP ${response.status}`),
-        );
+        setError(data.error || formatFriendlyAiError(`HTTP ${response.status}`));
         return;
       }
 
@@ -172,6 +188,7 @@ export function AdviceMissionAI({
       let addedAssistantBubble = false;
 
       const appendDelta = (delta: string) => {
+        receivedAnyDelta = true;
         accumulatedText += delta;
         if (!addedAssistantBubble) {
           addedAssistantBubble = true;
@@ -206,8 +223,13 @@ export function AdviceMissionAI({
             const evt = JSON.parse(jsonStr) as {
               delta?: string;
               done?: boolean;
+              status?: string;
+              message?: string;
               error?: string;
             };
+            if (evt.status && evt.message && !receivedAnyDelta) {
+              setStatusNotice(evt.message);
+            }
             if (evt.delta) {
               appendDelta(evt.delta);
             }
@@ -220,15 +242,30 @@ export function AdviceMissionAI({
         }
       }
 
-      if (streamError && !accumulatedText.trim()) {
-        setLastFailedQuestion(trimmed);
-        setError(streamError);
-        return;
-      }
-
       if (!accumulatedText.trim()) {
+        // One quiet non-streaming fallback call to /api/ai/ask if SSE ended without tokens
+        if (!streamError) {
+          setStatusNotice('Completing answer via backup route...');
+          const fallbackRes = await fetch('/api/ai/ask', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          });
+          const fallbackData = (await fallbackRes.json().catch(() => ({}))) as {
+            answer?: string;
+            error?: string;
+          };
+          if (fallbackRes.ok && fallbackData.answer?.trim()) {
+            appendDelta(fallbackData.answer.trim());
+            return;
+          }
+          if (fallbackData.error) {
+            streamError = fallbackData.error;
+          }
+        }
+
         setLastFailedQuestion(trimmed);
-        setError(formatFriendlyAiError('empty'));
+        setError(streamError || formatFriendlyAiError('empty'));
       }
     } catch (err) {
       setLastFailedQuestion(trimmed);
@@ -238,6 +275,7 @@ export function AdviceMissionAI({
         ),
       );
     } finally {
+      window.clearTimeout(delayTimer);
       setLoading(false);
     }
   }
@@ -382,9 +420,10 @@ export function AdviceMissionAI({
             )}
 
             {loading && messages[messages.length - 1]?.role !== 'assistant' && (
-              <div className="flex justify-start">
-                <div className="rounded-2xl px-4 py-3 bg-white border border-slate-200 text-sm text-slate-600">
-                  Preparing your fast answer...
+              <div role="status" aria-live="polite" className="flex justify-start">
+                <div className="inline-flex items-center gap-2 rounded-2xl px-4 py-3 bg-white border border-slate-200 text-sm text-slate-600">
+                  <Sparkles className="w-3.5 h-3.5 text-amber-600 shrink-0 animate-pulse" aria-hidden="true" />
+                  <span>{statusNotice}</span>
                 </div>
               </div>
             )}

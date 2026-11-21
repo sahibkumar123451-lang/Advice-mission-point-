@@ -17,6 +17,7 @@ import type {
 import {
   ADMIN_PASSCODE_HASH,
   ADMIN_PASSCODE_SALT,
+  executeMultiModelWithFallback,
   formatFriendlyAiError,
   isPdfFileOrUrl,
   isTransientGeminiApiError,
@@ -26,12 +27,12 @@ import {
   normalizeExternalUrl,
   normalizeSafeMediaOrExternalUrl,
   normalizeWhatsAppUrl,
-  retryWithExponentialBackoff,
   validateCoachingInfo,
   validateEnquiryInput,
   validateGalleryInput,
   validateLearningResourceInput,
   validateTeacherProfile,
+  type MultiModelRouteSpec,
 } from './src/utils/coachingLogic.ts';
 import { DEFAULT_SITE_DATA } from './src/utils/seedData.ts';
 
@@ -229,58 +230,115 @@ Rules:
     return { normalizedTurns, systemInstruction };
   }
 
-  const AI_ATTEMPT_SCHEDULE: Array<{
-    model: string;
-    level: ThinkingLevel;
-    useCompactLiteParams: boolean;
-  }> = [
-    { model: 'gemini-3.1-flash-lite', level: ThinkingLevel.MINIMAL, useCompactLiteParams: true },
-    { model: 'gemini-3.1-flash-lite', level: ThinkingLevel.MINIMAL, useCompactLiteParams: true },
-    { model: 'gemini-4-hydrogen', level: ThinkingLevel.LOW, useCompactLiteParams: false },
-    { model: 'gemini-4-hydrogen', level: ThinkingLevel.LOW, useCompactLiteParams: false },
+  const AI_BASE_ROUTES: MultiModelRouteSpec[] = [
+    {
+      model: 'gemini-4-hydrogen',
+      label: 'Primary Flash',
+      thinkingLevel: 'LOW',
+      useCompactLiteParams: false,
+      timeoutMs: 8000,
+    },
+    {
+      model: 'gemini-3.1-flash-lite',
+      label: 'Secondary Flash Lite',
+      thinkingLevel: 'MINIMAL',
+      useCompactLiteParams: true,
+      timeoutMs: 8000,
+    },
   ];
 
+  let stickyHealthyModel: string | null = null;
+  let stickyHealthyUpdatedAt = 0;
+  const STICKY_HEALTH_TTL_MS = 60_000;
+
+  function getOrderedAiRoutes(): MultiModelRouteSpec[] {
+    if (
+      stickyHealthyModel &&
+      Date.now() - stickyHealthyUpdatedAt < STICKY_HEALTH_TTL_MS
+    ) {
+      const preferred = AI_BASE_ROUTES.find((r) => r.model === stickyHealthyModel);
+      if (preferred) {
+        return [preferred, ...AI_BASE_ROUTES.filter((r) => r.model !== stickyHealthyModel)];
+      }
+    }
+    return AI_BASE_ROUTES;
+  }
+
+  function recordHealthyAiModel(model: string) {
+    stickyHealthyModel = model;
+    stickyHealthyUpdatedAt = Date.now();
+  }
+
   function buildGeminiConfig(
-    attempt: (typeof AI_ATTEMPT_SCHEDULE)[number],
+    route: MultiModelRouteSpec,
     systemInstruction: string,
+    abortSignal?: AbortSignal,
   ) {
-    // Pass tuned temperature & output token cap on gemini-3.1-flash-lite (no thinking overhead);
-    // keep gemini-4-hydrogen strictly compliant with ThinkingLevel-only sizing guidance.
-    if (attempt.useCompactLiteParams) {
+    const level =
+      route.thinkingLevel === 'MINIMAL' ? ThinkingLevel.MINIMAL : ThinkingLevel.LOW;
+    // Pass compact temperature (0.5) & token limit on gemini-3.1-flash-lite;
+    // keep gemini-4-hydrogen strictly compliant with ThinkingLevel-only sizing rules.
+    if (route.useCompactLiteParams) {
       return {
         systemInstruction,
-        thinkingConfig: { thinkingLevel: attempt.level },
-        temperature: 0.55,
-        maxOutputTokens: 640,
+        thinkingConfig: { thinkingLevel: level },
+        temperature: 0.5,
+        maxOutputTokens: 512,
+        abortSignal,
       };
     }
     return {
       systemInstruction,
-      thinkingConfig: { thinkingLevel: attempt.level },
+      thinkingConfig: { thinkingLevel: level },
+      abortSignal,
     };
   }
 
-  async function withTimeout<T>(promise: Promise<T>, timeoutMs = 10000): Promise<T> {
-    let timer: ReturnType<typeof setTimeout> | undefined;
+  async function runWithAbortTimeout<T>(
+    timeoutMs: number,
+    task: (controller: AbortController, clearInitialTimeout: () => void) => Promise<T>,
+  ): Promise<T> {
+    const controller = new AbortController();
+    let timedOut = false;
+    let timer: ReturnType<typeof setTimeout> | undefined = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, timeoutMs);
+
+    const clearInitialTimeout = () => {
+      if (timer) {
+        clearTimeout(timer);
+        timer = undefined;
+      }
+    };
+
     try {
-      return await Promise.race([
-        promise,
-        new Promise<never>((_, reject) => {
-          timer = setTimeout(
-            () => reject(new Error('Request timeout (504) while waiting for AI model')),
-            timeoutMs,
+      const result = await Promise.race([
+        task(controller, clearInitialTimeout),
+        new Promise<never>((_resolve, reject) => {
+          controller.signal.addEventListener(
+            'abort',
+            () => {
+              if (timedOut) {
+                reject(new Error('Request timeout (504) while waiting for AI model'));
+              } else {
+                reject(new Error('Request aborted'));
+              }
+            },
+            { once: true },
           );
         }),
       ]);
+      return result;
     } finally {
-      if (timer) clearTimeout(timer);
+      clearInitialTimeout();
     }
   }
 
-  // Advice Mission AI Streaming SSE endpoint (low-latency + 3 exponential-backoff retries)
+  // Advice Mission AI Streaming SSE endpoint (instant multi-model failover + rate-limit backoff)
   app.post('/api/ai/stream', async (req: Request, res: Response) => {
     const { messages, languagePreference } = req.body as {
-      messages?: Array<{ role: 'user' | 'assistant'; text: string }>;
+      messages?: Array<{ role?: 'user' | 'assistant'; text?: string }>;
       languagePreference?: 'bilingual' | 'english' | 'hindi';
     };
 
@@ -305,54 +363,87 @@ Rules:
     res.setHeader('X-Accel-Buffering', 'no');
     res.flushHeaders?.();
 
-    const sendEvent = (payload: Record<string, unknown>) => {
+    let clientDisconnected = false;
+    res.on('close', () => {
       if (!res.writableEnded) {
+        clientDisconnected = true;
+      }
+    });
+
+    const sendEvent = (payload: Record<string, unknown>) => {
+      if (!res.writableEnded && !clientDisconnected) {
         res.write(`data: ${JSON.stringify(payload)}\n\n`);
       }
     };
 
-    let attemptIndex = 0;
     let emittedAny = false;
+    const routes = getOrderedAiRoutes();
+
     try {
-      await retryWithExponentialBackoff(
-        async () => {
-          if (req.destroyed || res.writableEnded) {
+      const { route: winningRoute } = await executeMultiModelWithFallback(
+        async (route, attemptIdx) => {
+          if (clientDisconnected || res.writableEnded) {
             return;
           }
-          const attempt =
-            AI_ATTEMPT_SCHEDULE[Math.min(attemptIndex, AI_ATTEMPT_SCHEDULE.length - 1)];
-          attemptIndex += 1;
 
-          const stream = await withTimeout(
-            ai.models.generateContentStream({
-              model: attempt.model,
-              contents: ctx.normalizedTurns,
-              config: buildGeminiConfig(attempt, ctx.systemInstruction),
-            }),
-            10000,
-          );
+          const startedAt = Date.now();
+          try {
+            await runWithAbortTimeout(route.timeoutMs, async (controller, clearInitialTimeout) => {
+              const stream = await ai.models.generateContentStream({
+                model: route.model,
+                contents: ctx.normalizedTurns,
+                config: buildGeminiConfig(route, ctx.systemInstruction, controller.signal),
+              });
 
-          for await (const chunk of stream) {
-            const delta = chunk.text;
-            if (delta) {
-              emittedAny = true;
-              sendEvent({ delta });
+              for await (const chunk of stream) {
+                if (clientDisconnected || res.writableEnded) {
+                  controller.abort();
+                  break;
+                }
+                const delta = chunk.text;
+                if (delta) {
+                  if (!emittedAny) {
+                    clearInitialTimeout();
+                    emittedAny = true;
+                  }
+                  sendEvent({ delta });
+                }
+              }
+            });
+
+            if (!emittedAny && !clientDisconnected) {
+              throw new Error('Empty model response.');
             }
-          }
-
-          if (!emittedAny) {
-            throw new Error('Empty model response.');
+          } catch (attemptErr) {
+            const elapsed = Date.now() - startedAt;
+            const detail =
+              attemptErr instanceof Error ? attemptErr.message : String(attemptErr);
+            console.warn(
+              `[AdviceMissionAI] stream attempt=${attemptIdx + 1} model=${route.model} failed in ${elapsed}ms: ${detail.slice(0, 180)}`,
+            );
+            throw attemptErr;
           }
         },
         {
-          maxRetries: 3,
-          baseDelayMs: 400,
-          maxDelayMs: 2000,
-          shouldRetry: (err) => !emittedAny && !req.destroyed && isTransientGeminiApiError(err),
+          routes,
+          maxAttempts: 4,
+          baseDelayMs: 450,
+          maxDelayMs: 2200,
+          shouldAbort: () => emittedAny || clientDisconnected || res.writableEnded,
+          onStatus: ({ reason }) => {
+            sendEvent({
+              status: reason,
+              message:
+                reason === 'failover'
+                  ? 'Primary AI is busy — switching seamlessly to backup model...'
+                  : 'High traffic detected — retrying gently in a moment...',
+            });
+          },
         },
       );
 
-      sendEvent({ done: true });
+      recordHealthyAiModel(winningRoute.model);
+      sendEvent({ done: true, model: winningRoute.label });
       res.end();
     } catch (err) {
       if (emittedAny) {
@@ -367,10 +458,10 @@ Rules:
     }
   });
 
-  // Advice Mission AI JSON endpoint (3 exponential-backoff retries fallback)
+  // Advice Mission AI JSON endpoint (instant multi-model failover + rate-limit backoff)
   app.post('/api/ai/ask', async (req: Request, res: Response) => {
     const { messages, languagePreference } = req.body as {
-      messages?: Array<{ role: 'user' | 'assistant'; text: string }>;
+      messages?: Array<{ role?: 'user' | 'assistant'; text?: string }>;
       languagePreference?: 'bilingual' | 'english' | 'hindi';
     };
 
@@ -389,37 +480,46 @@ Rules:
       return;
     }
 
-    let attemptIndex = 0;
+    const routes = getOrderedAiRoutes();
     try {
-      const answer = await retryWithExponentialBackoff(
-        async () => {
-          const attempt =
-            AI_ATTEMPT_SCHEDULE[Math.min(attemptIndex, AI_ATTEMPT_SCHEDULE.length - 1)];
-          attemptIndex += 1;
+      const { result: answer, route: winningRoute } = await executeMultiModelWithFallback(
+        async (route, attemptIdx) => {
+          const startedAt = Date.now();
+          try {
+            const response = await runWithAbortTimeout(
+              route.timeoutMs,
+              async (controller) =>
+                ai.models.generateContent({
+                  model: route.model,
+                  contents: ctx.normalizedTurns,
+                  config: buildGeminiConfig(route, ctx.systemInstruction, controller.signal),
+                }),
+            );
 
-          const response = await withTimeout(
-            ai.models.generateContent({
-              model: attempt.model,
-              contents: ctx.normalizedTurns,
-              config: buildGeminiConfig(attempt, ctx.systemInstruction),
-            }),
-            10000,
-          );
-
-          const text = response.text?.trim();
-          if (!text) {
-            throw new Error('Empty model response.');
+            const text = response.text?.trim();
+            if (!text) {
+              throw new Error('Empty model response.');
+            }
+            return text;
+          } catch (attemptErr) {
+            const elapsed = Date.now() - startedAt;
+            const detail =
+              attemptErr instanceof Error ? attemptErr.message : String(attemptErr);
+            console.warn(
+              `[AdviceMissionAI] ask attempt=${attemptIdx + 1} model=${route.model} failed in ${elapsed}ms: ${detail.slice(0, 180)}`,
+            );
+            throw attemptErr;
           }
-          return text;
         },
         {
-          maxRetries: 3,
-          baseDelayMs: 400,
-          maxDelayMs: 2000,
-          shouldRetry: isTransientGeminiApiError,
+          routes,
+          maxAttempts: 4,
+          baseDelayMs: 450,
+          maxDelayMs: 2200,
         },
       );
 
+      recordHealthyAiModel(winningRoute.model);
       res.json({ answer });
     } catch (err) {
       const rawMessage =
