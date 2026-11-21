@@ -31,6 +31,7 @@ import type {
   SocialLinks,
   TeacherProfile,
 } from '../types/coaching';
+import { retryWithExponentialBackoff } from './coachingLogic';
 
 const app = initializeApp(firebaseConfig);
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
@@ -90,7 +91,10 @@ export function handleFirestoreError(
 
 async function testConnection() {
   try {
-    await getDocFromServer(doc(db, 'test', 'connection'));
+    await retryWithExponentialBackoff(
+      () => getDocFromServer(doc(db, 'test', 'connection')),
+      { maxRetries: 2, baseDelayMs: 500 },
+    );
   } catch (error) {
     if (error instanceof Error && error.message.includes('the client is offline')) {
       console.error('Please check your Firebase configuration.');
@@ -104,10 +108,24 @@ export function subscribeToAuthChanges(callback: (user: User | null) => void) {
   return onAuthStateChanged(auth, callback);
 }
 
+export async function refreshAdminAuthSession(forceRefresh = true): Promise<User | null> {
+  if (!auth.currentUser) {
+    return null;
+  }
+  await retryWithExponentialBackoff(
+    () => auth.currentUser!.getIdToken(forceRefresh),
+    { maxRetries: 3, baseDelayMs: 500, maxDelayMs: 2500 },
+  );
+  return auth.currentUser;
+}
+
 export async function signInAdminWithGoogle(): Promise<User> {
   const provider = new GoogleAuthProvider();
   provider.setCustomParameters({ prompt: 'select_account' });
-  const cred = await signInWithPopup(auth, provider);
+  const cred = await retryWithExponentialBackoff(
+    () => signInWithPopup(auth, provider),
+    { maxRetries: 2, baseDelayMs: 600, maxDelayMs: 2500 },
+  );
   return cred.user;
 }
 
@@ -139,11 +157,15 @@ export async function loadPublicSiteFromFirestore(): Promise<Partial<SiteData>> 
   const result: Partial<SiteData> = {};
 
   try {
-    const [coachingSnap, socialSnap, teacherSnap] = await Promise.all([
-      getDoc(doc(db, 'coachingConfig', 'main')),
-      getDoc(doc(db, 'socialLinksConfig', 'main')),
-      getDoc(doc(db, 'teacherConfig', 'main')),
-    ]);
+    const [coachingSnap, socialSnap, teacherSnap] = await retryWithExponentialBackoff(
+      () =>
+        Promise.all([
+          getDoc(doc(db, 'coachingConfig', 'main')),
+          getDoc(doc(db, 'socialLinksConfig', 'main')),
+          getDoc(doc(db, 'teacherConfig', 'main')),
+        ]),
+      { maxRetries: 3, baseDelayMs: 500, maxDelayMs: 2500 },
+    );
 
     if (coachingSnap.exists()) {
       const data = coachingSnap.data();
@@ -200,7 +222,10 @@ export async function loadPublicSiteFromFirestore(): Promise<Partial<SiteData>> 
       collection(db, 'galleryItems'),
       where('published', '==', true),
     );
-    const galSnap = await getDocs(galQuery);
+    const galSnap = await retryWithExponentialBackoff(
+      () => getDocs(galQuery),
+      { maxRetries: 3, baseDelayMs: 500, maxDelayMs: 2500 },
+    );
     if (!galSnap.empty) {
       result.gallery = galSnap.docs
         .map((d) => {
@@ -228,7 +253,10 @@ export async function loadPublicSiteFromFirestore(): Promise<Partial<SiteData>> 
       collection(db, 'learningHubItems'),
       where('published', '==', true),
     );
-    const hubSnap = await getDocs(hubQuery);
+    const hubSnap = await retryWithExponentialBackoff(
+      () => getDocs(hubQuery),
+      { maxRetries: 3, baseDelayMs: 500, maxDelayMs: 2500 },
+    );
     if (!hubSnap.empty) {
       result.learningHub = hubSnap.docs
         .map((d) => {
@@ -430,7 +458,11 @@ export async function loadAllAdminSiteDataFromFirestore(): Promise<Partial<SiteD
     return result;
   }
   try {
-    const galSnap = await getDocs(collection(db, 'galleryItems'));
+    await refreshAdminAuthSession(false);
+    const galSnap = await retryWithExponentialBackoff(
+      () => getDocs(collection(db, 'galleryItems')),
+      { maxRetries: 3, baseDelayMs: 500, maxDelayMs: 2500 },
+    );
     if (!galSnap.empty) {
       result.gallery = galSnap.docs
         .map((d) => {
@@ -454,7 +486,10 @@ export async function loadAllAdminSiteDataFromFirestore(): Promise<Partial<SiteD
   }
 
   try {
-    const hubSnap = await getDocs(collection(db, 'learningHubItems'));
+    const hubSnap = await retryWithExponentialBackoff(
+      () => getDocs(collection(db, 'learningHubItems')),
+      { maxRetries: 3, baseDelayMs: 500, maxDelayMs: 2500 },
+    );
     if (!hubSnap.empty) {
       result.learningHub = hubSnap.docs
         .map((d) => {
@@ -489,40 +524,49 @@ export async function saveCoachingAndSocialsToCloud(
   socialLinks: SocialLinks,
 ): Promise<void> {
   if (!auth.currentUser) return;
+  await refreshAdminAuthSession(false);
 
   try {
-    await setDoc(
-      doc(db, 'coachingConfig', 'main'),
-      stripUndefined({
-        name: coaching.name.slice(0, 120),
-        tagline: coaching.tagline.slice(0, 200),
-        welcomeHeadline: (coaching.welcomeHeadline || '').slice(0, 240),
-        welcomeSubtitle: (coaching.welcomeSubtitle || '').slice(0, 600),
-        aboutHeading: (coaching.aboutHeading || '').slice(0, 200),
-        aboutDescription: (coaching.aboutDescription || '').slice(0, 3000),
-        classesRangeText: (coaching.classesRangeText || '').slice(0, 300),
-        address: coaching.address.slice(0, 300),
-        googleMapsUrl: coaching.googleMapsUrl.slice(0, 600),
-        phone: (coaching.phone || '').slice(0, 80),
-        email: (coaching.email || '').slice(0, 160),
-        officeHours: (coaching.officeHours || '').slice(0, 160),
-        heroMediaUrl: (coaching.heroMediaUrl || '').slice(0, 800000),
-        heroMediaType: coaching.heroMediaType === 'video' ? 'video' : 'image',
-        updatedAt: serverTimestamp(),
-      }),
+    await retryWithExponentialBackoff(
+      () =>
+        setDoc(
+          doc(db, 'coachingConfig', 'main'),
+          stripUndefined({
+            name: coaching.name.slice(0, 120),
+            tagline: coaching.tagline.slice(0, 200),
+            welcomeHeadline: (coaching.welcomeHeadline || '').slice(0, 240),
+            welcomeSubtitle: (coaching.welcomeSubtitle || '').slice(0, 600),
+            aboutHeading: (coaching.aboutHeading || '').slice(0, 200),
+            aboutDescription: (coaching.aboutDescription || '').slice(0, 3000),
+            classesRangeText: (coaching.classesRangeText || '').slice(0, 300),
+            address: coaching.address.slice(0, 300),
+            googleMapsUrl: coaching.googleMapsUrl.slice(0, 600),
+            phone: (coaching.phone || '').slice(0, 80),
+            email: (coaching.email || '').slice(0, 160),
+            officeHours: (coaching.officeHours || '').slice(0, 160),
+            heroMediaUrl: (coaching.heroMediaUrl || '').slice(0, 800000),
+            heroMediaType: coaching.heroMediaType === 'video' ? 'video' : 'image',
+            updatedAt: serverTimestamp(),
+          }),
+        ),
+      { maxRetries: 3, baseDelayMs: 500, maxDelayMs: 2500 },
     );
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, 'coachingConfig/main');
   }
 
   try {
-    await setDoc(doc(db, 'socialLinksConfig', 'main'), {
-      whatsapp: socialLinks.whatsapp.slice(0, 500),
-      instagram: socialLinks.instagram.slice(0, 500),
-      facebook: socialLinks.facebook.slice(0, 500),
-      youtube: socialLinks.youtube.slice(0, 500),
-      updatedAt: serverTimestamp(),
-    });
+    await retryWithExponentialBackoff(
+      () =>
+        setDoc(doc(db, 'socialLinksConfig', 'main'), {
+          whatsapp: socialLinks.whatsapp.slice(0, 500),
+          instagram: socialLinks.instagram.slice(0, 500),
+          facebook: socialLinks.facebook.slice(0, 500),
+          youtube: socialLinks.youtube.slice(0, 500),
+          updatedAt: serverTimestamp(),
+        }),
+      { maxRetries: 3, baseDelayMs: 500, maxDelayMs: 2500 },
+    );
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, 'socialLinksConfig/main');
   }
@@ -530,21 +574,26 @@ export async function saveCoachingAndSocialsToCloud(
 
 export async function saveTeacherToCloud(teacher: TeacherProfile): Promise<void> {
   if (!auth.currentUser) return;
+  await refreshAdminAuthSession(false);
   try {
-    await setDoc(
-      doc(db, 'teacherConfig', 'main'),
-      stripUndefined({
-        name: teacher.name.slice(0, 160),
-        roleTitle: (teacher.roleTitle || '').slice(0, 200),
-        photoUrl: (teacher.photoUrl || '').slice(0, 800000),
-        introduction: teacher.introduction.slice(0, 3000),
-        qualifications: teacher.qualifications.slice(0, 400),
-        experience: teacher.experience.slice(0, 400),
-        skills: teacher.skills.slice(0, 25).map((s) => s.slice(0, 160)),
-        classesTaught: teacher.classesTaught.slice(0, 200),
-        subjectsTaught: teacher.subjectsTaught.slice(0, 25).map((s) => s.slice(0, 160)),
-        updatedAt: serverTimestamp(),
-      }),
+    await retryWithExponentialBackoff(
+      () =>
+        setDoc(
+          doc(db, 'teacherConfig', 'main'),
+          stripUndefined({
+            name: teacher.name.slice(0, 160),
+            roleTitle: (teacher.roleTitle || '').slice(0, 200),
+            photoUrl: (teacher.photoUrl || '').slice(0, 800000),
+            introduction: teacher.introduction.slice(0, 3000),
+            qualifications: teacher.qualifications.slice(0, 400),
+            experience: teacher.experience.slice(0, 400),
+            skills: teacher.skills.slice(0, 25).map((s) => s.slice(0, 160)),
+            classesTaught: teacher.classesTaught.slice(0, 200),
+            subjectsTaught: teacher.subjectsTaught.slice(0, 25).map((s) => s.slice(0, 160)),
+            updatedAt: serverTimestamp(),
+          }),
+        ),
+      { maxRetries: 3, baseDelayMs: 500, maxDelayMs: 2500 },
     );
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, 'teacherConfig/main');
@@ -553,29 +602,32 @@ export async function saveTeacherToCloud(teacher: TeacherProfile): Promise<void>
 
 export async function saveGalleryItemToCloud(item: GalleryItem): Promise<void> {
   if (!auth.currentUser) return;
+  await refreshAdminAuthSession(false);
   const ref = doc(db, 'galleryItems', item.id);
   try {
-    const existing = await getDoc(ref);
-    const createdAt = existing.exists()
-      ? existing.data().createdAt
-      : serverTimestamp();
+    await retryWithExponentialBackoff(async () => {
+      const existing = await getDoc(ref);
+      const createdAt = existing.exists()
+        ? existing.data().createdAt
+        : serverTimestamp();
 
-    const payload: Record<string, unknown> = {
-      id: item.id,
-      title: item.title.slice(0, 200),
-      caption: (item.caption || '').slice(0, 1000),
-      category: item.category,
-      mediaType: item.mediaType,
-      mediaUrl: item.mediaUrl.slice(0, 800000),
-      published: Boolean(item.published),
-      createdAt,
-      updatedAt: serverTimestamp(),
-    };
-    if (item.thumbnailUrl?.trim()) {
-      payload.thumbnailUrl = item.thumbnailUrl.trim().slice(0, 800000);
-    }
+      const payload: Record<string, unknown> = {
+        id: item.id,
+        title: item.title.slice(0, 200),
+        caption: (item.caption || '').slice(0, 1000),
+        category: item.category,
+        mediaType: item.mediaType,
+        mediaUrl: item.mediaUrl.slice(0, 800000),
+        published: Boolean(item.published),
+        createdAt,
+        updatedAt: serverTimestamp(),
+      };
+      if (item.thumbnailUrl?.trim()) {
+        payload.thumbnailUrl = item.thumbnailUrl.trim().slice(0, 800000);
+      }
 
-    await setDoc(ref, payload);
+      await setDoc(ref, payload);
+    }, { maxRetries: 3, baseDelayMs: 500, maxDelayMs: 2500 });
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, `galleryItems/${item.id}`);
   }
@@ -583,8 +635,12 @@ export async function saveGalleryItemToCloud(item: GalleryItem): Promise<void> {
 
 export async function deleteGalleryItemFromCloud(id: string): Promise<void> {
   if (!auth.currentUser) return;
+  await refreshAdminAuthSession(false);
   try {
-    await deleteDoc(doc(db, 'galleryItems', id));
+    await retryWithExponentialBackoff(
+      () => deleteDoc(doc(db, 'galleryItems', id)),
+      { maxRetries: 3, baseDelayMs: 500, maxDelayMs: 2500 },
+    );
   } catch (error) {
     handleFirestoreError(error, OperationType.DELETE, `galleryItems/${id}`);
   }
@@ -592,6 +648,7 @@ export async function deleteGalleryItemFromCloud(id: string): Promise<void> {
 
 export async function saveLearningResourceToCloud(resource: LearningResource): Promise<void> {
   if (!auth.currentUser) return;
+  await refreshAdminAuthSession(false);
   const ref = doc(db, 'learningHubItems', resource.id);
   try {
     const payload: Record<string, unknown> = {
@@ -612,7 +669,10 @@ export async function saveLearningResourceToCloud(resource: LearningResource): P
       payload.pdfName = resource.pdfName.trim().slice(0, 240);
     }
 
-    await setDoc(ref, payload);
+    await retryWithExponentialBackoff(
+      () => setDoc(ref, payload),
+      { maxRetries: 3, baseDelayMs: 500, maxDelayMs: 2500 },
+    );
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, `learningHubItems/${resource.id}`);
   }
@@ -620,8 +680,12 @@ export async function saveLearningResourceToCloud(resource: LearningResource): P
 
 export async function deleteLearningResourceFromCloud(id: string): Promise<void> {
   if (!auth.currentUser) return;
+  await refreshAdminAuthSession(false);
   try {
-    await deleteDoc(doc(db, 'learningHubItems', id));
+    await retryWithExponentialBackoff(
+      () => deleteDoc(doc(db, 'learningHubItems', id)),
+      { maxRetries: 3, baseDelayMs: 500, maxDelayMs: 2500 },
+    );
   } catch (error) {
     handleFirestoreError(error, OperationType.DELETE, `learningHubItems/${id}`);
   }

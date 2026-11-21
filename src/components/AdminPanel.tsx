@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { User } from 'firebase/auth';
 import {
+  AlertTriangle,
   Check,
   Cloud,
   Download,
@@ -16,6 +17,7 @@ import {
   Search,
   Trash2,
   Upload,
+  WifiOff,
   X,
 } from 'lucide-react';
 import type {
@@ -30,17 +32,23 @@ import type {
   TeacherProfile,
 } from '../types/coaching';
 import {
+  type AdminDraftSnapshot,
+  buildSiteDataWithDraftEdits,
+  clearAdminDraftFromStorage,
   detectUploadCategoryAndType,
   filterAdminGalleryItems,
   filterAdminLearningResources,
   formatDisplayDate,
+  formatFirebaseAdminError,
   formatTitleFromFilename,
   isPdfFileOrUrl,
   isVideoFileOrUrl,
+  loadAdminDraftFromStorage,
   mergeSiteDataPreserveExisting,
   normalizeExternalUrl,
   normalizeSafeMediaOrExternalUrl,
   normalizeWhatsAppUrl,
+  saveAdminDraftToStorage,
   validateCoachingInfo,
   validateGalleryInput,
   validateLearningResourceInput,
@@ -51,6 +59,7 @@ import {
   deleteGalleryItemFromCloud,
   deleteLearningResourceFromCloud,
   loadAllAdminSiteDataFromFirestore,
+  refreshAdminAuthSession,
   saveCoachingAndSocialsToCloud,
   saveGalleryItemToCloud,
   saveLearningResourceToCloud,
@@ -83,9 +92,17 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
   const [adminData, setAdminData] = useState<SiteData | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [errorHint, setErrorHint] = useState<string | null>(null);
+  const [hasRetryAction, setHasRetryAction] = useState(false);
+  const retryCallbackRef = useRef<(() => Promise<void>) | null>(null);
   const [saving, setSaving] = useState(false);
   const [cloudUser, setCloudUser] = useState<User | null>(null);
   const [cloudBusy, setCloudBusy] = useState(false);
+  const [isOffline, setIsOffline] = useState(() =>
+    typeof navigator !== 'undefined' ? !navigator.onLine : false,
+  );
+  const [hasLocalPendingDraft, setHasLocalPendingDraft] = useState(false);
+  const [savedDraftNotice, setSavedDraftNotice] = useState<AdminDraftSnapshot | null>(null);
 
   // Coaching & Social form state
   const [coachingForm, setCoachingForm] = useState<CoachingInfo | null>(null);
@@ -155,13 +172,208 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
   }, []);
 
   useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const handleOnline = () => setIsOffline(false);
+    const handleOffline = () => setIsOffline(true);
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
+
+  useEffect(() => {
     if (!isOpen) return;
     if (initialTab) {
       setActiveTab(initialTab);
     }
     setStatusMessage(null);
-    setErrorMessage(null);
+    clearErrorBanner();
   }, [isOpen, initialTab]);
+
+  useEffect(() => {
+    if (!authToken || !adminData || savedDraftNotice) return;
+    if (!isOffline && !hasLocalPendingDraft) return;
+    const timer = window.setTimeout(() => {
+      persistCurrentDraft('network-error');
+    }, 350);
+    return () => window.clearTimeout(timer);
+  }, [
+    authToken,
+    adminData,
+    isOffline,
+    hasLocalPendingDraft,
+    savedDraftNotice,
+    coachingForm,
+    socialForm,
+    teacherForm,
+    skillsText,
+    subjectsText,
+    galTitle,
+    galCaption,
+    galMediaUrl,
+    hubTitle,
+    hubSummary,
+    hubContent,
+    hubPdfUrl,
+  ]);
+
+  function clearErrorBanner() {
+    setErrorMessage(null);
+    setErrorHint(null);
+    retryCallbackRef.current = null;
+    setHasRetryAction(false);
+  }
+
+  function buildLiveExportSiteData(extra?: {
+    pendingItem?: GalleryItem;
+    pendingHub?: LearningResource;
+  }): SiteData {
+    const base: SiteData = adminData || structuredClone(DEFAULT_SITE_DATA);
+    let combined = buildSiteDataWithDraftEdits(base, {
+      coaching: coachingForm,
+      socialLinks: socialForm,
+      teacher: teacherForm,
+      skillsText,
+      subjectsText,
+    });
+    if (extra?.pendingItem) {
+      combined = mergeSiteDataPreserveExisting(combined, {
+        gallery: [extra.pendingItem],
+      });
+    }
+    if (extra?.pendingHub) {
+      combined = mergeSiteDataPreserveExisting(combined, {
+        learningHub: [extra.pendingHub],
+      });
+    }
+    return combined;
+  }
+
+  function persistCurrentDraft(
+    reason: 'editing' | 'network-error',
+    extra?: {
+      pendingItem?: GalleryItem;
+      pendingHub?: LearningResource;
+    },
+  ) {
+    const snapshotData = buildLiveExportSiteData(extra);
+    if (extra?.pendingItem || extra?.pendingHub) {
+      setAdminData(snapshotData);
+    }
+    saveAdminDraftToStorage({
+      updatedAt: new Date().toISOString(),
+      reason,
+      siteData: snapshotData,
+      skillsText,
+      subjectsText,
+      pendingGalleryDraft: galTitle.trim() || galMediaUrl.trim()
+        ? {
+            title: galTitle,
+            caption: galCaption,
+            category: galCategory,
+            mediaType: galMediaType,
+            mediaUrl: galMediaUrl,
+            thumbnailUrl: galThumbUrl,
+            published: galPublished,
+          }
+        : undefined,
+      pendingHubDraft: hubTitle.trim() || hubContent.trim() || hubPdfUrl.trim()
+        ? {
+            title: hubTitle,
+            topicArea: hubTopic,
+            summary: hubSummary,
+            content: hubContent,
+            languageNote: hubLang,
+            formulasText: hubFormulasText,
+            pdfUrl: hubPdfUrl,
+            pdfName: hubPdfName,
+            published: hubPublished,
+          }
+        : undefined,
+    });
+    if (reason === 'network-error') {
+      setHasLocalPendingDraft(true);
+    }
+  }
+
+  function surfaceFirebaseOrNetworkError(
+    error: unknown,
+    retryFn?: () => Promise<void>,
+    extraDraft?: {
+      pendingItem?: GalleryItem;
+      pendingHub?: LearningResource;
+    },
+  ) {
+    persistCurrentDraft('network-error', extraDraft);
+    const formatted = formatFirebaseAdminError(error);
+    setErrorMessage(formatted.message);
+    setErrorHint(formatted.hint || null);
+    if (retryFn && formatted.isRetryable) {
+      retryCallbackRef.current = retryFn;
+      setHasRetryAction(true);
+    } else {
+      retryCallbackRef.current = null;
+      setHasRetryAction(false);
+    }
+  }
+
+  async function handleRetryLastAction() {
+    const fn = retryCallbackRef.current;
+    if (!fn) return;
+    clearErrorBanner();
+    await fn();
+  }
+
+  function handleRestoreSavedDraft() {
+    if (!savedDraftNotice) return;
+    const draftSite = savedDraftNotice.siteData;
+    setAdminData(draftSite);
+    setCoachingForm(draftSite.coaching);
+    setSocialForm(draftSite.socialLinks);
+    setTeacherForm(draftSite.teacher);
+    setSkillsText(
+      savedDraftNotice.skillsText ?? draftSite.teacher.skills.join('\n'),
+    );
+    setSubjectsText(
+      savedDraftNotice.subjectsText ?? draftSite.teacher.subjectsTaught.join(', '),
+    );
+    if (savedDraftNotice.pendingGalleryDraft) {
+      const g = savedDraftNotice.pendingGalleryDraft;
+      setGalTitle(g.title);
+      setGalCaption(g.caption);
+      setGalCategory(g.category);
+      setGalMediaType(g.mediaType);
+      setGalMediaUrl(g.mediaUrl);
+      setGalThumbUrl(g.thumbnailUrl);
+      setGalPublished(g.published);
+    }
+    if (savedDraftNotice.pendingHubDraft) {
+      const h = savedDraftNotice.pendingHubDraft;
+      setHubTitle(h.title);
+      setHubTopic(h.topicArea);
+      setHubSummary(h.summary);
+      setHubContent(h.content);
+      setHubLang(h.languageNote);
+      setHubFormulasText(h.formulasText);
+      setHubPdfUrl(h.pdfUrl);
+      setHubPdfName(h.pdfName);
+      setHubPublished(h.published);
+    }
+    setSavedDraftNotice(null);
+    setHasLocalPendingDraft(true);
+    clearErrorBanner();
+    setStatusMessage(
+      'Restored your saved local draft. Click Retry / Save to publish when ready, or export a JSON backup.',
+    );
+  }
+
+  function handleDiscardSavedDraft() {
+    clearAdminDraftFromStorage();
+    setSavedDraftNotice(null);
+    setHasLocalPendingDraft(false);
+  }
 
   async function fetchAdminData(token: string) {
     let data: SiteData = structuredClone(DEFAULT_SITE_DATA);
@@ -201,7 +413,7 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
         }
       }
     } catch {
-      // Keep local/default data if Firestore isn't populated yet
+      // Keep local/default data if Firestore isn't populated yet or offline
     }
 
     setAdminData(data);
@@ -210,42 +422,59 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
     setTeacherForm(data.teacher);
     setSkillsText(data.teacher.skills.join('\n'));
     setSubjectsText(data.teacher.subjectsTaught.join(', '));
+
+    const existingDraft = loadAdminDraftFromStorage();
+    if (existingDraft && existingDraft.reason === 'network-error') {
+      setSavedDraftNotice(existingDraft);
+      setHasLocalPendingDraft(true);
+    }
   }
 
-  async function ensureCloudWriterReady(): Promise<boolean> {
-    if (cloudUser) return true;
+  async function ensureCloudWriterReady(
+    retryFn?: () => Promise<void>,
+    forceSessionRefresh = false,
+  ): Promise<boolean> {
+    if (cloudUser) {
+      try {
+        await refreshAdminAuthSession(forceSessionRefresh);
+        return true;
+      } catch (err) {
+        surfaceFirebaseOrNetworkError(err, retryFn || handleConnectCloudSync);
+        return false;
+      }
+    }
     try {
       const user = await signInAdminWithGoogle();
       setCloudUser(user);
       return true;
-    } catch {
-      setErrorMessage(
-        'Please click "Connect Cloud Sync" and sign in with your owner Google account so changes appear live everywhere.',
-      );
+    } catch (err) {
+      surfaceFirebaseOrNetworkError(err, retryFn || handleConnectCloudSync);
       return false;
     }
   }
 
   async function handleConnectCloudSync() {
     setCloudBusy(true);
-    setErrorMessage(null);
+    clearErrorBanner();
     setStatusMessage(null);
     try {
-      const user = await signInAdminWithGoogle();
+      const user = cloudUser
+        ? (await refreshAdminAuthSession(true)) || (await signInAdminWithGoogle())
+        : await signInAdminWithGoogle();
       setCloudUser(user);
-      if (adminData) {
-        await syncSiteDataToCloudNonDestructive(adminData);
+      const latestData = buildLiveExportSiteData();
+      if (latestData) {
+        await syncSiteDataToCloudNonDestructive(latestData);
       }
       await onSiteUpdated();
+      clearAdminDraftFromStorage();
+      setHasLocalPendingDraft(false);
+      setSavedDraftNotice(null);
       setStatusMessage(
         `Cloud Sync connected as ${user.email}. All edits will stay saved across publishes.`,
       );
     } catch (err) {
-      setErrorMessage(
-        err instanceof Error
-          ? err.message
-          : 'Could not connect Google Cloud Sync. Please allow the sign-in popup and try again.',
-      );
+      surfaceFirebaseOrNetworkError(err, handleConnectCloudSync);
     } finally {
       setCloudBusy(false);
     }
@@ -254,32 +483,40 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
   async function handleManualCloudSync() {
     if (!adminData) return;
     setCloudBusy(true);
-    setErrorMessage(null);
+    clearErrorBanner();
     setStatusMessage(null);
     try {
-      await syncSiteDataToCloudNonDestructive(adminData);
+      await refreshAdminAuthSession(true);
+      const latestData = buildLiveExportSiteData();
+      await syncSiteDataToCloudNonDestructive(latestData);
+      setAdminData(latestData);
       await onSiteUpdated();
+      clearAdminDraftFromStorage();
+      setHasLocalPendingDraft(false);
+      setSavedDraftNotice(null);
       setStatusMessage('All current edits safely synced to Cloud Firestore.');
     } catch (err) {
-      setErrorMessage(
-        err instanceof Error ? err.message : 'Unable to sync changes to cloud right now.',
-      );
+      surfaceFirebaseOrNetworkError(err, handleManualCloudSync);
     } finally {
       setCloudBusy(false);
     }
   }
 
-  function handleDownloadBackup() {
-    if (!adminData) return;
+  function handleDownloadBackup(fromSavedNotice = false) {
+    const sourceData =
+      fromSavedNotice && savedDraftNotice
+        ? savedDraftNotice.siteData
+        : buildLiveExportSiteData();
+    if (!sourceData) return;
     const payload = {
       exportedAt: new Date().toISOString(),
-      website: adminData.coaching.name,
+      website: sourceData.coaching.name,
       data: {
-        coaching: adminData.coaching,
-        socialLinks: adminData.socialLinks,
-        teacher: adminData.teacher,
-        gallery: adminData.gallery,
-        learningHub: adminData.learningHub,
+        coaching: sourceData.coaching,
+        socialLinks: sourceData.socialLinks,
+        teacher: sourceData.teacher,
+        gallery: sourceData.gallery,
+        learningHub: sourceData.learningHub,
       },
     };
     const blob = new Blob([JSON.stringify(payload, null, 2)], {
@@ -293,20 +530,22 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
-    setStatusMessage('Site backup (.json) downloaded.');
+    setStatusMessage(
+      'Local backup (.json) downloaded with your latest edits. You can restore it anytime.',
+    );
   }
 
   async function handleRestoreBackupFile(file: File | undefined) {
     if (!file || !authToken) return;
     setCloudBusy(true);
-    setErrorMessage(null);
+    clearErrorBanner();
     setStatusMessage(null);
+    let restoredData: SiteData | null = null;
     try {
       const text = await file.text();
       const parsed = JSON.parse(text) as { data?: Partial<SiteData> } & Partial<SiteData>;
       const backupData = parsed.data || parsed;
 
-      let restoredData: SiteData | null = null;
       if (authToken !== 'cloud-session') {
         try {
           const res = await fetch('/api/admin/restore', {
@@ -331,17 +570,32 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
       }
 
       if (restoredData && (cloudUser || authToken === 'cloud-session')) {
-        const ready = await ensureCloudWriterReady();
-        if (ready) {
-          await syncSiteDataToCloudNonDestructive(restoredData);
+        const ready = await ensureCloudWriterReady(() => handleRestoreBackupFile(file));
+        if (!ready) {
+          setAdminData(restoredData);
+          setCoachingForm(restoredData.coaching);
+          setSocialForm(restoredData.socialLinks);
+          setTeacherForm(restoredData.teacher);
+          setSkillsText(restoredData.teacher.skills.join('\n'));
+          setSubjectsText(restoredData.teacher.subjectsTaught.join(', '));
+          return;
         }
+        await syncSiteDataToCloudNonDestructive(restoredData);
       }
 
       await fetchAdminData(authToken);
       await onSiteUpdated();
+      clearAdminDraftFromStorage();
+      setHasLocalPendingDraft(false);
+      setSavedDraftNotice(null);
       setStatusMessage('Backup merged cleanly — all previous and restored items are preserved.');
-    } catch {
-      setErrorMessage('Invalid backup JSON file. Please select a valid Advice Mission Point backup.');
+    } catch (err) {
+      if (err instanceof SyntaxError) {
+        setErrorMessage('Invalid backup JSON file. Please select a valid Advice Mission Point backup.');
+        setErrorHint(null);
+      } else {
+        surfaceFirebaseOrNetworkError(err, () => handleRestoreBackupFile(file));
+      }
     } finally {
       setCloudBusy(false);
     }
@@ -452,12 +706,12 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
   async function handleBulkGalleryUpload(files: FileList | null) {
     if (!authToken || !files || files.length === 0) return;
     const isCloudOnly = authToken === 'cloud-session';
-    if (isCloudOnly && !(await ensureCloudWriterReady())) return;
+    if (isCloudOnly && !(await ensureCloudWriterReady(() => handleBulkGalleryUpload(files)))) return;
 
     const fileArray = Array.from(files);
     setSaving(true);
     setStatusMessage(null);
-    setErrorMessage(null);
+    clearErrorBanner();
     let successCount = 0;
 
     try {
@@ -515,14 +769,23 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
         }
 
         if (itemToSync) {
-          if (cloudUser) {
-            await saveGalleryItemToCloud(itemToSync);
+          if (cloudUser || isCloudOnly) {
+            try {
+              await saveGalleryItemToCloud(itemToSync);
+            } catch (err) {
+              surfaceFirebaseOrNetworkError(err, () => handleBulkGalleryUpload(files), {
+                pendingItem: itemToSync,
+              });
+              return;
+            }
           }
           successCount += 1;
         }
       }
       await fetchAdminData(authToken);
       await onSiteUpdated();
+      clearAdminDraftFromStorage();
+      setHasLocalPendingDraft(false);
       setStatusMessage(
         cloudUser
           ? `${successCount} file${successCount === 1 ? '' : 's'} uploaded and synced LIVE everywhere.`
@@ -537,11 +800,13 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
   async function replaceGalleryItemMedia(item: GalleryItem, file: File) {
     if (!authToken) return;
     const isCloudOnly = authToken === 'cloud-session';
-    if (isCloudOnly && !(await ensureCloudWriterReady())) return;
+    if (isCloudOnly && !(await ensureCloudWriterReady(() => replaceGalleryItemMedia(item, file)))) {
+      return;
+    }
 
     setSaving(true);
     setStatusMessage(null);
-    setErrorMessage(null);
+    clearErrorBanner();
     try {
       const uploadedUrl = await uploadSelectedFile(file);
       if (!uploadedUrl) return;
@@ -593,11 +858,20 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
         return;
       }
 
-      if (cloudUser) {
-        await saveGalleryItemToCloud(updatedItem);
+      if (cloudUser || isCloudOnly) {
+        try {
+          await saveGalleryItemToCloud(updatedItem);
+        } catch (err) {
+          surfaceFirebaseOrNetworkError(err, () => replaceGalleryItemMedia(item, file), {
+            pendingItem: updatedItem,
+          });
+          return;
+        }
       }
       await fetchAdminData(authToken);
       await onSiteUpdated();
+      clearAdminDraftFromStorage();
+      setHasLocalPendingDraft(false);
       setStatusMessage(
         cloudUser
           ? `Replaced media for "${item.title}" — live everywhere!`
@@ -611,12 +885,12 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
   async function handleBulkPdfUpload(files: FileList | null) {
     if (!authToken || !files || files.length === 0) return;
     const isCloudOnly = authToken === 'cloud-session';
-    if (isCloudOnly && !(await ensureCloudWriterReady())) return;
+    if (isCloudOnly && !(await ensureCloudWriterReady(() => handleBulkPdfUpload(files)))) return;
 
     const fileArray = Array.from(files);
     setSaving(true);
     setStatusMessage(null);
-    setErrorMessage(null);
+    clearErrorBanner();
     let successCount = 0;
 
     try {
@@ -673,14 +947,23 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
         }
 
         if (resourceToSync) {
-          if (cloudUser) {
-            await saveLearningResourceToCloud(resourceToSync);
+          if (cloudUser || isCloudOnly) {
+            try {
+              await saveLearningResourceToCloud(resourceToSync);
+            } catch (err) {
+              surfaceFirebaseOrNetworkError(err, () => handleBulkPdfUpload(files), {
+                pendingHub: resourceToSync,
+              });
+              return;
+            }
           }
           successCount += 1;
         }
       }
       await fetchAdminData(authToken);
       await onSiteUpdated();
+      clearAdminDraftFromStorage();
+      setHasLocalPendingDraft(false);
       setStatusMessage(
         cloudUser
           ? `${successCount} PDF${successCount === 1 ? '' : 's'} uploaded and synced LIVE everywhere.`
@@ -692,11 +975,10 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
     }
   }
 
-  async function saveCoachingAndSocials(e: React.FormEvent) {
-    e.preventDefault();
+  async function executeSaveCoachingAndSocials() {
     if (!authToken || !coachingForm || !socialForm) return;
     const isCloudOnly = authToken === 'cloud-session';
-    if (isCloudOnly && !(await ensureCloudWriterReady())) return;
+    if (isCloudOnly && !(await ensureCloudWriterReady(executeSaveCoachingAndSocials))) return;
 
     const rawHeroUrl = (coachingForm.heroMediaUrl || '').trim();
     const nextHeroUrl = rawHeroUrl ? normalizeSafeMediaOrExternalUrl(rawHeroUrl) : '';
@@ -719,12 +1001,13 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
     const validation = validateCoachingInfo(nextCoaching, nextSocial);
     if (!validation.valid) {
       setErrorMessage(validation.error || 'Please fill all required fields.');
+      setErrorHint(null);
       return;
     }
 
     setSaving(true);
     setStatusMessage(null);
-    setErrorMessage(null);
+    clearErrorBanner();
     try {
       let savedCoaching = nextCoaching;
       let savedSocial = nextSocial;
@@ -761,21 +1044,30 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
 
       await fetchAdminData(authToken);
       await onSiteUpdated();
+      clearAdminDraftFromStorage();
+      setHasLocalPendingDraft(false);
+      setSavedDraftNotice(null);
       setStatusMessage(
         cloudUser || isCloudOnly
           ? 'Coaching info & links saved — live on the website everywhere!'
           : 'Saved on this server. Connect Cloud Sync above so changes appear live everywhere!',
       );
+    } catch (err) {
+      surfaceFirebaseOrNetworkError(err, executeSaveCoachingAndSocials);
     } finally {
       setSaving(false);
     }
   }
 
-  async function saveTeacherProfile(e: React.FormEvent) {
+  async function saveCoachingAndSocials(e: React.FormEvent) {
     e.preventDefault();
+    await executeSaveCoachingAndSocials();
+  }
+
+  async function executeSaveTeacherProfile() {
     if (!authToken || !teacherForm) return;
     const isCloudOnly = authToken === 'cloud-session';
-    if (isCloudOnly && !(await ensureCloudWriterReady())) return;
+    if (isCloudOnly && !(await ensureCloudWriterReady(executeSaveTeacherProfile))) return;
 
     const payload: TeacherProfile = {
       ...teacherForm,
@@ -794,12 +1086,13 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
     const validation = validateTeacherProfile(payload);
     if (!validation.valid) {
       setErrorMessage(validation.error || 'Please fill all required teacher details.');
+      setErrorHint(null);
       return;
     }
 
     setSaving(true);
     setStatusMessage(null);
-    setErrorMessage(null);
+    clearErrorBanner();
     try {
       let savedTeacher = payload;
 
@@ -830,14 +1123,24 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
 
       await fetchAdminData(authToken);
       await onSiteUpdated();
+      clearAdminDraftFromStorage();
+      setHasLocalPendingDraft(false);
+      setSavedDraftNotice(null);
       setStatusMessage(
         cloudUser || isCloudOnly
           ? 'Teacher profile updated — live on the website everywhere!'
           : 'Saved on this server. Connect Cloud Sync above so changes appear live everywhere!',
       );
+    } catch (err) {
+      surfaceFirebaseOrNetworkError(err, executeSaveTeacherProfile);
     } finally {
       setSaving(false);
     }
+  }
+
+  async function saveTeacherProfile(e: React.FormEvent) {
+    e.preventDefault();
+    await executeSaveTeacherProfile();
   }
 
   function resetGalleryForm() {
@@ -865,11 +1168,10 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
     setInlineGalPublished(item.published);
   }
 
-  async function saveNewGalleryItem(e: React.FormEvent) {
-    e.preventDefault();
+  async function executeSaveNewGalleryItem() {
     if (!authToken) return;
     const isCloudOnly = authToken === 'cloud-session';
-    if (isCloudOnly && !(await ensureCloudWriterReady())) return;
+    if (isCloudOnly && !(await ensureCloudWriterReady(executeSaveNewGalleryItem))) return;
 
     const resolvedType: MediaType =
       galCategory === 'pdfs' || isPdfFileOrUrl(galMediaUrl)
@@ -892,12 +1194,13 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
     const validation = validateGalleryInput(draftItem);
     if (!validation.valid) {
       setErrorMessage(validation.error || 'Please provide valid gallery item details.');
+      setErrorHint(null);
       return;
     }
 
     setSaving(true);
     setStatusMessage(null);
-    setErrorMessage(null);
+    clearErrorBanner();
     try {
       let itemToSync = draftItem;
 
@@ -936,20 +1239,31 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
       resetGalleryForm();
       await fetchAdminData(authToken);
       await onSiteUpdated();
+      clearAdminDraftFromStorage();
+      setHasLocalPendingDraft(false);
       setStatusMessage(
         cloudUser || isCloudOnly
           ? 'New photo, video, or PDF published LIVE everywhere!'
           : 'New item saved locally. Connect Cloud Sync above to publish everywhere.',
       );
+    } catch (err) {
+      surfaceFirebaseOrNetworkError(err, executeSaveNewGalleryItem, {
+        pendingItem: draftItem,
+      });
     } finally {
       setSaving(false);
     }
   }
 
+  async function saveNewGalleryItem(e: React.FormEvent) {
+    e.preventDefault();
+    await executeSaveNewGalleryItem();
+  }
+
   async function saveInlineGalleryEdit(id: string) {
     if (!authToken) return;
     const isCloudOnly = authToken === 'cloud-session';
-    if (isCloudOnly && !(await ensureCloudWriterReady())) return;
+    if (isCloudOnly && !(await ensureCloudWriterReady(() => saveInlineGalleryEdit(id)))) return;
 
     const resolvedType: MediaType =
       inlineGalCategory === 'pdfs' || isPdfFileOrUrl(inlineGalMediaUrl)
@@ -973,12 +1287,13 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
     const validation = validateGalleryInput(nextItem);
     if (!validation.valid) {
       setErrorMessage(validation.error || 'Please provide valid gallery item details.');
+      setErrorHint(null);
       return;
     }
 
     setSaving(true);
     setStatusMessage(null);
-    setErrorMessage(null);
+    clearErrorBanner();
     try {
       let itemToSync = nextItem;
 
@@ -1017,11 +1332,17 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
       setInlineGalId(null);
       await fetchAdminData(authToken);
       await onSiteUpdated();
+      clearAdminDraftFromStorage();
+      setHasLocalPendingDraft(false);
       setStatusMessage(
         cloudUser || isCloudOnly
           ? `Updated "${inlineGalTitle}" — live everywhere!`
           : `Updated "${inlineGalTitle}" locally.`,
       );
+    } catch (err) {
+      surfaceFirebaseOrNetworkError(err, () => saveInlineGalleryEdit(id), {
+        pendingItem: nextItem,
+      });
     } finally {
       setSaving(false);
     }
@@ -1030,60 +1351,72 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
   async function toggleGalleryPublish(item: GalleryItem) {
     if (!authToken) return;
     const isCloudOnly = authToken === 'cloud-session';
-    if (isCloudOnly && !(await ensureCloudWriterReady())) return;
+    if (isCloudOnly && !(await ensureCloudWriterReady(() => toggleGalleryPublish(item)))) return;
 
     let itemToSync: GalleryItem = { ...item, published: !item.published };
+    clearErrorBanner();
 
-    if (!isCloudOnly) {
-      try {
-        const res = await fetch(`/api/admin/gallery/${item.id}`, {
-          method: 'PUT',
-          headers: {
-            'Content-Type': 'application/json',
-            'x-admin-token': authToken,
-          },
-          body: JSON.stringify({ published: !item.published }),
-        });
-        if (res.ok) {
-          const body = (await res.json()) as { item?: GalleryItem };
-          if (body.item) itemToSync = body.item;
+    try {
+      if (!isCloudOnly) {
+        try {
+          const res = await fetch(`/api/admin/gallery/${item.id}`, {
+            method: 'PUT',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-admin-token': authToken,
+            },
+            body: JSON.stringify({ published: !item.published }),
+          });
+          if (res.ok) {
+            const body = (await res.json()) as { item?: GalleryItem };
+            if (body.item) itemToSync = body.item;
+          }
+        } catch {
+          // Proceed to cloud update
         }
-      } catch {
-        // Proceed to cloud update
       }
-    }
 
-    if (cloudUser || isCloudOnly) {
-      await saveGalleryItemToCloud(itemToSync);
+      if (cloudUser || isCloudOnly) {
+        await saveGalleryItemToCloud(itemToSync);
+      }
+      await fetchAdminData(authToken);
+      await onSiteUpdated();
+    } catch (err) {
+      surfaceFirebaseOrNetworkError(err, () => toggleGalleryPublish(item), {
+        pendingItem: itemToSync,
+      });
     }
-    await fetchAdminData(authToken);
-    await onSiteUpdated();
   }
 
   async function deleteGalleryItem(id: string) {
     if (!authToken) return;
     const isCloudOnly = authToken === 'cloud-session';
-    if (isCloudOnly && !(await ensureCloudWriterReady())) return;
+    if (isCloudOnly && !(await ensureCloudWriterReady(() => deleteGalleryItem(id)))) return;
 
-    if (!isCloudOnly) {
-      try {
-        await fetch(`/api/admin/gallery/${id}`, {
-          method: 'DELETE',
-          headers: { 'x-admin-token': authToken },
-        });
-      } catch {
-        // Proceed to cloud delete
+    clearErrorBanner();
+    try {
+      if (!isCloudOnly) {
+        try {
+          await fetch(`/api/admin/gallery/${id}`, {
+            method: 'DELETE',
+            headers: { 'x-admin-token': authToken },
+          });
+        } catch {
+          // Proceed to cloud delete
+        }
       }
+      if (cloudUser || isCloudOnly) {
+        await deleteGalleryItemFromCloud(id);
+      }
+      if (inlineGalId === id) {
+        setInlineGalId(null);
+      }
+      await fetchAdminData(authToken);
+      await onSiteUpdated();
+      setStatusMessage('Gallery item deleted.');
+    } catch (err) {
+      surfaceFirebaseOrNetworkError(err, () => deleteGalleryItem(id));
     }
-    if (cloudUser || isCloudOnly) {
-      await deleteGalleryItemFromCloud(id);
-    }
-    if (inlineGalId === id) {
-      setInlineGalId(null);
-    }
-    await fetchAdminData(authToken);
-    await onSiteUpdated();
-    setStatusMessage('Gallery item deleted.');
   }
 
   function resetHubForm() {
@@ -1115,11 +1448,10 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
     setInlineHubPublished(resource.published);
   }
 
-  async function saveNewHubResource(e: React.FormEvent) {
-    e.preventDefault();
+  async function executeSaveNewHubResource() {
     if (!authToken) return;
     const isCloudOnly = authToken === 'cloud-session';
-    if (isCloudOnly && !(await ensureCloudWriterReady())) return;
+    if (isCloudOnly && !(await ensureCloudWriterReady(executeSaveNewHubResource))) return;
 
     const cleanPdfUrl = hubPdfUrl.trim() || undefined;
     const cleanPdfName = hubPdfName.trim() || undefined;
@@ -1146,12 +1478,13 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
     const validation = validateLearningResourceInput(draftResource);
     if (!validation.valid) {
       setErrorMessage(validation.error || 'Please fill all required Learning Hub fields.');
+      setErrorHint(null);
       return;
     }
 
     setSaving(true);
     setStatusMessage(null);
-    setErrorMessage(null);
+    clearErrorBanner();
     try {
       let resourceToSync = draftResource;
 
@@ -1192,20 +1525,31 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
       resetHubForm();
       await fetchAdminData(authToken);
       await onSiteUpdated();
+      clearAdminDraftFromStorage();
+      setHasLocalPendingDraft(false);
       setStatusMessage(
         cloudUser || isCloudOnly
           ? 'Study guide / PDF published LIVE everywhere!'
           : 'Study guide saved locally. Connect Cloud Sync above to publish everywhere.',
       );
+    } catch (err) {
+      surfaceFirebaseOrNetworkError(err, executeSaveNewHubResource, {
+        pendingHub: draftResource,
+      });
     } finally {
       setSaving(false);
     }
   }
 
+  async function saveNewHubResource(e: React.FormEvent) {
+    e.preventDefault();
+    await executeSaveNewHubResource();
+  }
+
   async function saveInlineHubEdit(id: string) {
     if (!authToken) return;
     const isCloudOnly = authToken === 'cloud-session';
-    if (isCloudOnly && !(await ensureCloudWriterReady())) return;
+    if (isCloudOnly && !(await ensureCloudWriterReady(() => saveInlineHubEdit(id)))) return;
 
     const nextResource: LearningResource = {
       id,
@@ -1226,12 +1570,13 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
     const validation = validateLearningResourceInput(nextResource);
     if (!validation.valid) {
       setErrorMessage(validation.error || 'Please fill all required Learning Hub fields.');
+      setErrorHint(null);
       return;
     }
 
     setSaving(true);
     setStatusMessage(null);
-    setErrorMessage(null);
+    clearErrorBanner();
     try {
       let resourceToSync = nextResource;
 
@@ -1272,11 +1617,17 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
       setInlineHubId(null);
       await fetchAdminData(authToken);
       await onSiteUpdated();
+      clearAdminDraftFromStorage();
+      setHasLocalPendingDraft(false);
       setStatusMessage(
         cloudUser || isCloudOnly
           ? `Updated "${inlineHubTitle}" — live everywhere!`
           : `Updated "${inlineHubTitle}" locally.`,
       );
+    } catch (err) {
+      surfaceFirebaseOrNetworkError(err, () => saveInlineHubEdit(id), {
+        pendingHub: nextResource,
+      });
     } finally {
       setSaving(false);
     }
@@ -1285,64 +1636,76 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
   async function toggleHubPublish(resItem: LearningResource) {
     if (!authToken) return;
     const isCloudOnly = authToken === 'cloud-session';
-    if (isCloudOnly && !(await ensureCloudWriterReady())) return;
+    if (isCloudOnly && !(await ensureCloudWriterReady(() => toggleHubPublish(resItem)))) return;
 
     let resourceToSync: LearningResource = {
       ...resItem,
       published: !resItem.published,
       updatedAt: new Date().toISOString(),
     };
+    clearErrorBanner();
 
-    if (!isCloudOnly) {
-      try {
-        const res = await fetch(`/api/admin/hub/${resItem.id}`, {
-          method: 'PUT',
-          headers: {
-            'Content-Type': 'application/json',
-            'x-admin-token': authToken,
-          },
-          body: JSON.stringify({ published: !resItem.published }),
-        });
-        if (res.ok) {
-          const body = (await res.json()) as { resource?: LearningResource };
-          if (body.resource) resourceToSync = body.resource;
+    try {
+      if (!isCloudOnly) {
+        try {
+          const res = await fetch(`/api/admin/hub/${resItem.id}`, {
+            method: 'PUT',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-admin-token': authToken,
+            },
+            body: JSON.stringify({ published: !resItem.published }),
+          });
+          if (res.ok) {
+            const body = (await res.json()) as { resource?: LearningResource };
+            if (body.resource) resourceToSync = body.resource;
+          }
+        } catch {
+          // Proceed to cloud update
         }
-      } catch {
-        // Proceed to cloud update
       }
-    }
 
-    if (cloudUser || isCloudOnly) {
-      await saveLearningResourceToCloud(resourceToSync);
+      if (cloudUser || isCloudOnly) {
+        await saveLearningResourceToCloud(resourceToSync);
+      }
+      await fetchAdminData(authToken);
+      await onSiteUpdated();
+    } catch (err) {
+      surfaceFirebaseOrNetworkError(err, () => toggleHubPublish(resItem), {
+        pendingHub: resourceToSync,
+      });
     }
-    await fetchAdminData(authToken);
-    await onSiteUpdated();
   }
 
   async function deleteHubResource(id: string) {
     if (!authToken) return;
     const isCloudOnly = authToken === 'cloud-session';
-    if (isCloudOnly && !(await ensureCloudWriterReady())) return;
+    if (isCloudOnly && !(await ensureCloudWriterReady(() => deleteHubResource(id)))) return;
 
-    if (!isCloudOnly) {
-      try {
-        await fetch(`/api/admin/hub/${id}`, {
-          method: 'DELETE',
-          headers: { 'x-admin-token': authToken },
-        });
-      } catch {
-        // Proceed to cloud delete
+    clearErrorBanner();
+    try {
+      if (!isCloudOnly) {
+        try {
+          await fetch(`/api/admin/hub/${id}`, {
+            method: 'DELETE',
+            headers: { 'x-admin-token': authToken },
+          });
+        } catch {
+          // Proceed to cloud delete
+        }
       }
+      if (cloudUser || isCloudOnly) {
+        await deleteLearningResourceFromCloud(id);
+      }
+      if (inlineHubId === id) {
+        setInlineHubId(null);
+      }
+      await fetchAdminData(authToken);
+      await onSiteUpdated();
+      setStatusMessage('Study guide deleted.');
+    } catch (err) {
+      surfaceFirebaseOrNetworkError(err, () => deleteHubResource(id));
     }
-    if (cloudUser || isCloudOnly) {
-      await deleteLearningResourceFromCloud(id);
-    }
-    if (inlineHubId === id) {
-      setInlineHubId(null);
-    }
-    await fetchAdminData(authToken);
-    await onSiteUpdated();
-    setStatusMessage('Study guide deleted.');
   }
 
   async function deleteEnquiry(id: string) {
@@ -1475,7 +1838,7 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                     onClick={() => {
                       setActiveTab(tab.id);
                       setStatusMessage(null);
-                      setErrorMessage(null);
+                      clearErrorBanner();
                     }}
                     className={`px-3.5 py-2 text-xs sm:text-sm font-semibold rounded-lg transition-colors whitespace-nowrap cursor-pointer ${
                       activeTab === tab.id
@@ -1545,7 +1908,7 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
 
                   <button
                     type="button"
-                    onClick={handleDownloadBackup}
+                    onClick={() => handleDownloadBackup(false)}
                     className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-800 bg-white border border-slate-300 hover:bg-slate-100 rounded-lg cursor-pointer"
                   >
                     <Download className="w-3.5 h-3.5" aria-hidden="true" />
@@ -1569,6 +1932,76 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                 </div>
               </div>
 
+              {isOffline && (
+                <div
+                  role="status"
+                  className="mb-5 p-3.5 rounded-xl bg-amber-50 border border-amber-200 text-amber-950 text-xs sm:text-sm flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                >
+                  <div className="flex items-start gap-2.5">
+                    <WifiOff className="w-4 h-4 shrink-0 mt-0.5 text-amber-700" aria-hidden="true" />
+                    <div>
+                      <p className="font-semibold">
+                        You appear to be offline — your edits stay safe locally.
+                      </p>
+                      <p className="text-xs text-amber-900/90 mt-0.5">
+                        Check your internet, DNS, or VPN connection. You can download a local JSON backup now and click Retry once connected.
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => handleDownloadBackup(false)}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-amber-950 bg-white border border-amber-300 hover:bg-amber-100 rounded-lg cursor-pointer shrink-0"
+                  >
+                    <Download className="w-3.5 h-3.5" aria-hidden="true" />
+                    <span>Save Backup JSON</span>
+                  </button>
+                </div>
+              )}
+
+              {savedDraftNotice && (
+                <div
+                  role="status"
+                  className="mb-5 p-3.5 rounded-xl bg-amber-50 border border-amber-200 text-amber-950 text-xs sm:text-sm flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                >
+                  <div className="flex items-start gap-2.5">
+                    <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5 text-amber-700" aria-hidden="true" />
+                    <div>
+                      <p className="font-semibold">
+                        Saved local draft found from {formatDisplayDate(savedDraftNotice.updatedAt)}
+                      </p>
+                      <p className="text-xs text-amber-900/90 mt-0.5">
+                        Your previous edits were preserved automatically during a connection interruption. Restore them to continue or export a JSON backup.
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2 shrink-0">
+                    <button
+                      type="button"
+                      onClick={handleRestoreSavedDraft}
+                      className="px-3 py-1.5 text-xs font-semibold text-white bg-slate-900 hover:bg-slate-800 rounded-lg cursor-pointer"
+                    >
+                      Restore Draft
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleDownloadBackup(true)}
+                      className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-semibold text-amber-950 bg-white border border-amber-300 hover:bg-amber-100 rounded-lg cursor-pointer"
+                    >
+                      <Download className="w-3.5 h-3.5" aria-hidden="true" />
+                      <span>Export Draft JSON</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleDiscardSavedDraft}
+                      className="px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:bg-amber-100 rounded-lg cursor-pointer"
+                    >
+                      Discard
+                    </button>
+                  </div>
+                </div>
+              )}
+
               {statusMessage && (
                 <div
                   role="status"
@@ -1582,9 +2015,37 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
               {errorMessage && (
                 <div
                   role="alert"
-                  className="mb-5 p-3 rounded-lg bg-red-50 border border-red-200 text-red-800 text-sm font-medium"
+                  className="mb-5 p-3.5 sm:p-4 rounded-xl bg-red-50 border border-red-200 text-red-900 text-sm flex flex-col sm:flex-row sm:items-center justify-between gap-3"
                 >
-                  {errorMessage}
+                  <div className="space-y-1">
+                    <p className="font-semibold">{errorMessage}</p>
+                    {errorHint && (
+                      <p className="text-xs text-red-800/90 leading-relaxed">{errorHint}</p>
+                    )}
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2 shrink-0">
+                    {hasRetryAction && (
+                      <button
+                        type="button"
+                        disabled={saving || cloudBusy}
+                        onClick={() => void handleRetryLastAction()}
+                        className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold text-white bg-red-700 hover:bg-red-800 disabled:opacity-50 rounded-lg cursor-pointer"
+                      >
+                        <RefreshCw className="w-3.5 h-3.5" aria-hidden="true" />
+                        <span>{saving || cloudBusy ? 'Retrying...' : 'Retry'}</span>
+                      </button>
+                    )}
+                    {hasLocalPendingDraft && (
+                      <button
+                        type="button"
+                        onClick={() => handleDownloadBackup(false)}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-900 bg-white border border-red-200 hover:bg-red-100/70 rounded-lg cursor-pointer"
+                      >
+                        <Download className="w-3.5 h-3.5" aria-hidden="true" />
+                        <span>Export Backup JSON</span>
+                      </button>
+                    )}
+                  </div>
                 </div>
               )}
 

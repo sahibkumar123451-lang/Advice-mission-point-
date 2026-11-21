@@ -2,21 +2,28 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   applyRealtimeCloudUpdate,
+  buildSiteDataWithDraftEdits,
+  clearAdminDraftFromStorage,
   detectUploadCategoryAndType,
   filterAdminGalleryItems,
   filterAdminLearningResources,
   filterGalleryItems,
   filterLearningResources,
+  formatFirebaseAdminError,
   formatFriendlyAiError,
   formatTitleFromFilename,
   getYouTubeEmbedUrl,
   isPdfFileOrUrl,
+  isTransientFirebaseNetworkError,
   isVideoFileOrUrl,
+  loadAdminDraftFromStorage,
   mergeSiteDataPreserveExisting,
   normalizeAiConversationHistory,
   normalizeExternalUrl,
   normalizeSafeMediaOrExternalUrl,
   normalizeWhatsAppUrl,
+  retryWithExponentialBackoff,
+  saveAdminDraftToStorage,
   validateCoachingInfo,
   validateEnquiryInput,
   validateGalleryInput,
@@ -289,4 +296,99 @@ test('applyRealtimeCloudUpdate updates live fields and preserves unchanged secti
   assert.equal(updated.gallery.length, 1);
   assert.equal(updated.learningHub.length, DEFAULT_SITE_DATA.learningHub.length);
 });
+
+test('isTransientFirebaseNetworkError identifies transient network failures and skips user/permission errors', () => {
+  assert.equal(
+    isTransientFirebaseNetworkError(new Error('Firebase: Error (auth/network-request-failed).')),
+    true,
+  );
+  assert.equal(
+    isTransientFirebaseNetworkError(
+      new Error(JSON.stringify({ error: 'Firebase: Error (auth/network-request-failed).', path: 'teacherConfig/main' })),
+    ),
+    true,
+  );
+  assert.equal(
+    isTransientFirebaseNetworkError(new Error('Failed to get document because the client is offline.')),
+    true,
+  );
+  assert.equal(
+    isTransientFirebaseNetworkError(new Error('Firebase: Error (auth/popup-closed-by-user).')),
+    false,
+  );
+  assert.equal(
+    isTransientFirebaseNetworkError(new Error('Missing or insufficient permissions.')),
+    false,
+  );
+});
+
+test('retryWithExponentialBackoff retries transient failures and stops immediately on non-transient errors', async () => {
+  let attempts = 0;
+  const delays: number[] = [];
+  const result = await retryWithExponentialBackoff(
+    async () => {
+      attempts += 1;
+      if (attempts < 3) {
+        throw new Error('Firebase: Error (auth/network-request-failed).');
+      }
+      return 'connected';
+    },
+    {
+      maxRetries: 3,
+      baseDelayMs: 1,
+      onRetry: (_attempt, delayMs) => delays.push(delayMs),
+    },
+  );
+  assert.equal(result, 'connected');
+  assert.equal(attempts, 3);
+  assert.deepEqual(delays, [1, 2]);
+
+  let nonRetryAttempts = 0;
+  await assert.rejects(
+    retryWithExponentialBackoff(
+      async () => {
+        nonRetryAttempts += 1;
+        throw new Error('Firebase: Error (auth/popup-closed-by-user).');
+      },
+      { maxRetries: 3, baseDelayMs: 1 },
+    ),
+  );
+  assert.equal(nonRetryAttempts, 1);
+});
+
+test('formatFirebaseAdminError replaces raw auth/network-request-failed with clear DNS/VPN/internet guidance', () => {
+  const formatted = formatFirebaseAdminError(new Error('Firebase: Error (auth/network-request-failed).'));
+  assert.equal(formatted.isNetworkError, true);
+  assert.equal(formatted.isRetryable, true);
+  assert.equal(formatted.message.includes('auth/network-request-failed'), false);
+  assert.ok(formatted.message.toLowerCase().includes('interrupted'));
+  assert.ok((formatted.hint || '').toLowerCase().includes('internet'));
+  assert.ok((formatted.hint || '').toLowerCase().includes('dns'));
+  assert.ok((formatted.hint || '').toLowerCase().includes('vpn'));
+});
+
+test('buildSiteDataWithDraftEdits and draft storage preserve unsaved local edits cleanly', () => {
+  const drafted = buildSiteDataWithDraftEdits(DEFAULT_SITE_DATA, {
+    coaching: { ...DEFAULT_SITE_DATA.coaching, phone: '+91 99999 88888' },
+    teacher: { ...DEFAULT_SITE_DATA.teacher, name: 'Updated Teacher' },
+    skillsText: 'Physics\nMathematics',
+    subjectsText: 'Physics, Maths',
+  });
+
+  assert.equal(drafted.coaching.phone, '+91 99999 88888');
+  assert.equal(drafted.teacher.name, 'Updated Teacher');
+  assert.deepEqual(drafted.teacher.skills, ['Physics', 'Mathematics']);
+  assert.deepEqual(drafted.teacher.subjectsTaught, ['Physics', 'Maths']);
+
+  const saved = saveAdminDraftToStorage({
+    updatedAt: '2026-11-20T00:00:00.000Z',
+    reason: 'network-error',
+    siteData: drafted,
+  });
+  // In Node without window.localStorage, save returns false safely without throwing
+  assert.equal(typeof saved, 'boolean');
+  assert.equal(loadAdminDraftFromStorage(), null);
+  clearAdminDraftFromStorage();
+});
+
 

@@ -497,3 +497,289 @@ export function applyRealtimeCloudUpdate(
   };
 }
 
+export function extractFirebaseErrorText(error: unknown): string {
+  const parts: string[] = [];
+  if (error && typeof error === 'object') {
+    const maybe = error as { code?: unknown; message?: unknown };
+    if (typeof maybe.code === 'string' && maybe.code.trim()) {
+      parts.push(maybe.code.trim());
+    }
+    if (typeof maybe.message === 'string' && maybe.message.trim()) {
+      const msg = maybe.message.trim();
+      parts.push(msg);
+      if (msg.startsWith('{')) {
+        try {
+          const parsed = JSON.parse(msg) as { error?: unknown };
+          if (typeof parsed.error === 'string' && parsed.error.trim()) {
+            parts.push(parsed.error.trim());
+          }
+        } catch {
+          // Ignore non-JSON error strings
+        }
+      }
+    }
+  } else if (typeof error === 'string') {
+    parts.push(error);
+  } else if (error != null) {
+    parts.push(String(error));
+  }
+  return parts.join(' ').trim();
+}
+
+export function isTransientFirebaseNetworkError(error: unknown): boolean {
+  const text = extractFirebaseErrorText(error).toLowerCase();
+  if (!text) return false;
+
+  // Non-retryable user/popup/auth-policy or permission failures
+  if (
+    text.includes('auth/popup-closed-by-user') ||
+    text.includes('auth/cancelled-popup-request') ||
+    text.includes('auth/popup-blocked') ||
+    text.includes('auth/user-cancelled') ||
+    text.includes('auth/unauthorized-domain') ||
+    text.includes('permission-denied') ||
+    text.includes('missing or insufficient permissions') ||
+    text.includes('unauthenticated')
+  ) {
+    return false;
+  }
+
+  return (
+    text.includes('auth/network-request-failed') ||
+    text.includes('network-request-failed') ||
+    text.includes('auth/timeout') ||
+    text.includes('unavailable') ||
+    text.includes('deadline-exceeded') ||
+    text.includes('client is offline') ||
+    text.includes('failed to fetch') ||
+    text.includes('networkerror') ||
+    text.includes('network error') ||
+    text.includes('err_network') ||
+    text.includes('err_internet_disconnected') ||
+    text.includes('err_name_not_resolved') ||
+    text.includes('econnreset') ||
+    text.includes('etimedout') ||
+    text.includes('enotfound')
+  );
+}
+
+export interface RetryBackoffOptions {
+  maxRetries?: number;
+  baseDelayMs?: number;
+  maxDelayMs?: number;
+  shouldRetry?: (error: unknown) => boolean;
+  onRetry?: (attempt: number, delayMs: number, error: unknown) => void;
+}
+
+export async function retryWithExponentialBackoff<T>(
+  operation: () => Promise<T>,
+  options: RetryBackoffOptions = {},
+): Promise<T> {
+  const maxRetries = Math.max(0, options.maxRetries ?? 3);
+  const baseDelayMs = Math.max(0, options.baseDelayMs ?? 500);
+  const maxDelayMs = Math.max(baseDelayMs, options.maxDelayMs ?? 4000);
+  const shouldRetry = options.shouldRetry ?? isTransientFirebaseNetworkError;
+
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+    try {
+      return await operation();
+    } catch (error) {
+      lastError = error;
+      if (attempt >= maxRetries || !shouldRetry(error)) {
+        throw error;
+      }
+      const delayMs = Math.min(maxDelayMs, baseDelayMs * Math.pow(2, attempt));
+      options.onRetry?.(attempt + 1, delayMs, error);
+      if (delayMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
+    }
+  }
+  throw lastError;
+}
+
+export interface FormattedFirebaseAdminError {
+  message: string;
+  hint?: string;
+  isNetworkError: boolean;
+  isRetryable: boolean;
+}
+
+export function formatFirebaseAdminError(error: unknown): FormattedFirebaseAdminError {
+  const text = extractFirebaseErrorText(error).toLowerCase();
+
+  if (isTransientFirebaseNetworkError(error)) {
+    return {
+      message:
+        'Connection to Firebase was interrupted before completing this request.',
+      hint: 'Please check your internet connection, DNS settings, or disable any VPN/ad-blocker, then click Retry. Your unsaved edits remain safely preserved locally and can be exported as a JSON backup.',
+      isNetworkError: true,
+      isRetryable: true,
+    };
+  }
+
+  if (text.includes('auth/popup-blocked')) {
+    return {
+      message: 'Google sign-in popup was blocked by your browser.',
+      hint: 'Please allow popups for this site in your browser address bar and click Retry.',
+      isNetworkError: false,
+      isRetryable: true,
+    };
+  }
+
+  if (
+    text.includes('auth/popup-closed-by-user') ||
+    text.includes('auth/cancelled-popup-request') ||
+    text.includes('auth/user-cancelled')
+  ) {
+    return {
+      message: 'Google sign-in was closed before finishing.',
+      hint: 'Click Retry to sign in with your owner Google account. Your unsaved edits are still preserved.',
+      isNetworkError: false,
+      isRetryable: true,
+    };
+  }
+
+  if (text.includes('auth/unauthorized-domain')) {
+    return {
+      message: 'This website domain is not yet authorized for Firebase Google Sign-In.',
+      hint: 'Your edits are preserved locally—you can export a JSON backup while domain authorization is enabled in Firebase.',
+      isNetworkError: false,
+      isRetryable: false,
+    };
+  }
+
+  if (
+    text.includes('permission-denied') ||
+    text.includes('missing or insufficient permissions')
+  ) {
+    return {
+      message: 'Your Google account does not have owner write permission for Cloud Sync.',
+      hint: 'Connect using the owner Google account, or download a JSON backup so your edits stay safe.',
+      isNetworkError: false,
+      isRetryable: true,
+    };
+  }
+
+  if (text.includes('resource-exhausted') || text.includes('quota')) {
+    return {
+      message: 'Cloud database request quota was temporarily reached.',
+      hint: 'Your edits are preserved locally. Download a JSON backup now and retry later.',
+      isNetworkError: false,
+      isRetryable: true,
+    };
+  }
+
+  return {
+    message: 'Could not complete the cloud request right now.',
+    hint: 'Your unsaved edits are preserved locally. Please check your connection and click Retry, or export a JSON backup.',
+    isNetworkError: false,
+    isRetryable: true,
+  };
+}
+
+export function buildSiteDataWithDraftEdits(
+  base: SiteData,
+  drafts: {
+    coaching?: CoachingInfo | null;
+    socialLinks?: SocialLinks | null;
+    teacher?: TeacherProfile | null;
+    skillsText?: string;
+    subjectsText?: string;
+  },
+): SiteData {
+  const nextTeacher: TeacherProfile = drafts.teacher
+    ? {
+        ...drafts.teacher,
+        skills:
+          typeof drafts.skillsText === 'string'
+            ? drafts.skillsText
+                .split('\n')
+                .map((s) => s.trim())
+                .filter(Boolean)
+            : drafts.teacher.skills,
+        subjectsTaught:
+          typeof drafts.subjectsText === 'string'
+            ? drafts.subjectsText
+                .split(',')
+                .map((s) => s.trim())
+                .filter(Boolean)
+            : drafts.teacher.subjectsTaught,
+      }
+    : base.teacher;
+
+  return {
+    coaching: drafts.coaching ? { ...base.coaching, ...drafts.coaching } : base.coaching,
+    socialLinks: drafts.socialLinks
+      ? { ...base.socialLinks, ...drafts.socialLinks }
+      : base.socialLinks,
+    teacher: nextTeacher,
+    gallery: base.gallery,
+    learningHub: base.learningHub,
+    enquiries: base.enquiries,
+  };
+}
+
+export const ADMIN_DRAFT_STORAGE_KEY = 'amp_admin_unsaved_draft_v1';
+
+export interface AdminDraftSnapshot {
+  updatedAt: string;
+  reason: 'editing' | 'network-error';
+  siteData: SiteData;
+  skillsText?: string;
+  subjectsText?: string;
+  pendingGalleryDraft?: {
+    title: string;
+    caption: string;
+    category: GalleryCategory;
+    mediaType: 'image' | 'video' | 'pdf';
+    mediaUrl: string;
+    thumbnailUrl: string;
+    published: boolean;
+  };
+  pendingHubDraft?: {
+    title: string;
+    topicArea: string;
+    summary: string;
+    content: string;
+    languageNote: string;
+    formulasText: string;
+    pdfUrl: string;
+    pdfName: string;
+    published: boolean;
+  };
+}
+
+export function saveAdminDraftToStorage(snapshot: AdminDraftSnapshot): boolean {
+  try {
+    if (!globalThis.localStorage) return false;
+    globalThis.localStorage.setItem(ADMIN_DRAFT_STORAGE_KEY, JSON.stringify(snapshot));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function loadAdminDraftFromStorage(): AdminDraftSnapshot | null {
+  try {
+    if (!globalThis.localStorage) return null;
+    const raw = globalThis.localStorage.getItem(ADMIN_DRAFT_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<AdminDraftSnapshot>;
+    if (!parsed || !parsed.siteData || !parsed.updatedAt) return null;
+    return parsed as AdminDraftSnapshot;
+  } catch {
+    return null;
+  }
+}
+
+export function clearAdminDraftFromStorage(): void {
+  try {
+    globalThis.localStorage?.removeItem(ADMIN_DRAFT_STORAGE_KEY);
+  } catch {
+    // Ignore storage access errors
+  }
+}
+
+
