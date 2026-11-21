@@ -15,6 +15,7 @@ import {
   getYouTubeEmbedUrl,
   isPdfFileOrUrl,
   isTransientFirebaseNetworkError,
+  isTransientGeminiApiError,
   isVideoFileOrUrl,
   loadAdminDraftFromStorage,
   mergeSiteDataPreserveExisting,
@@ -273,10 +274,26 @@ test('mergeSiteDataPreserveExisting preserves previous items while applying inco
   assert.ok(merged.gallery.some((g) => g.id === 'gal-1'));
 });
 
-test('formatFriendlyAiError hides raw JSON and explains transient 503 cleanly', () => {
-  const msg = formatFriendlyAiError('{"error":{"code":503,"status":"UNAVAILABLE"}}');
-  assert.equal(msg.includes('{'), false);
-  assert.ok(msg.toLowerCase().includes('retry'));
+test('formatFriendlyAiError hides raw JSON and replaces generic busy wording with Ask Again guidance', () => {
+  const msg503 = formatFriendlyAiError('{"error":{"code":503,"status":"UNAVAILABLE"}}');
+  assert.equal(msg503.includes('{'), false);
+  assert.equal(msg503.toLowerCase().includes('temporarily busy'), false);
+  assert.ok(msg503.toLowerCase().includes('ask again'));
+
+  const msg429 = formatFriendlyAiError('429 RESOURCE_EXHAUSTED Too Many Requests');
+  assert.ok(msg429.toLowerCase().includes('ask again'));
+
+  const msgTimeout = formatFriendlyAiError('Request timeout (504)');
+  assert.ok(msgTimeout.toLowerCase().includes('ask again'));
+});
+
+test('isTransientGeminiApiError targets 503, 429, and timeout errors while skipping auth/bad-request errors', () => {
+  assert.equal(isTransientGeminiApiError(new Error('503 Service Unavailable')), true);
+  assert.equal(isTransientGeminiApiError(new Error('429 RESOURCE_EXHAUSTED Too Many Requests')), true);
+  assert.equal(isTransientGeminiApiError(new Error('Request timeout (504)')), true);
+  assert.equal(isTransientGeminiApiError(new Error('API_KEY_INVALID 400')), false);
+  assert.equal(isTransientGeminiApiError(new Error('403 PERMISSION_DENIED')), false);
+  assert.equal(isTransientGeminiApiError(new Error('404 NOT_FOUND')), false);
 });
 
 test('verifyAdminPasscodeHash rejects empty and old/invalid passcodes', async () => {

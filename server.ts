@@ -19,12 +19,14 @@ import {
   ADMIN_PASSCODE_SALT,
   formatFriendlyAiError,
   isPdfFileOrUrl,
+  isTransientGeminiApiError,
   isVideoFileOrUrl,
   mergeSiteDataPreserveExisting,
   normalizeAiConversationHistory,
   normalizeExternalUrl,
   normalizeSafeMediaOrExternalUrl,
   normalizeWhatsAppUrl,
+  retryWithExponentialBackoff,
   validateCoachingInfo,
   validateEnquiryInput,
   validateGalleryInput,
@@ -227,12 +229,55 @@ Rules:
     return { normalizedTurns, systemInstruction };
   }
 
-  const FAST_AI_MODELS: Array<{ model: string; level: ThinkingLevel }> = [
-    { model: 'gemini-3.1-flash-lite', level: ThinkingLevel.MINIMAL },
-    { model: 'gemini-4-hydrogen', level: ThinkingLevel.LOW },
+  const AI_ATTEMPT_SCHEDULE: Array<{
+    model: string;
+    level: ThinkingLevel;
+    useCompactLiteParams: boolean;
+  }> = [
+    { model: 'gemini-3.1-flash-lite', level: ThinkingLevel.MINIMAL, useCompactLiteParams: true },
+    { model: 'gemini-3.1-flash-lite', level: ThinkingLevel.MINIMAL, useCompactLiteParams: true },
+    { model: 'gemini-4-hydrogen', level: ThinkingLevel.LOW, useCompactLiteParams: false },
+    { model: 'gemini-4-hydrogen', level: ThinkingLevel.LOW, useCompactLiteParams: false },
   ];
 
-  // Advice Mission AI Streaming SSE endpoint (ultra-fast first-token response)
+  function buildGeminiConfig(
+    attempt: (typeof AI_ATTEMPT_SCHEDULE)[number],
+    systemInstruction: string,
+  ) {
+    // Pass tuned temperature & output token cap on gemini-3.1-flash-lite (no thinking overhead);
+    // keep gemini-4-hydrogen strictly compliant with ThinkingLevel-only sizing guidance.
+    if (attempt.useCompactLiteParams) {
+      return {
+        systemInstruction,
+        thinkingConfig: { thinkingLevel: attempt.level },
+        temperature: 0.55,
+        maxOutputTokens: 640,
+      };
+    }
+    return {
+      systemInstruction,
+      thinkingConfig: { thinkingLevel: attempt.level },
+    };
+  }
+
+  async function withTimeout<T>(promise: Promise<T>, timeoutMs = 10000): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        promise,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error('Request timeout (504) while waiting for AI model')),
+            timeoutMs,
+          );
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  // Advice Mission AI Streaming SSE endpoint (low-latency + 3 exponential-backoff retries)
   app.post('/api/ai/stream', async (req: Request, res: Response) => {
     const { messages, languagePreference } = req.body as {
       messages?: Array<{ role: 'user' | 'assistant'; text: string }>;
@@ -266,69 +311,63 @@ Rules:
       }
     };
 
-    let lastErrorMessage = '';
-    for (let i = 0; i < FAST_AI_MODELS.length; i += 1) {
-      const attempt = FAST_AI_MODELS[i];
-      let emittedAny = false;
-      try {
-        const stream = await Promise.race([
-          ai.models.generateContentStream({
-            model: attempt.model,
-            contents: ctx.normalizedTurns,
-            config: {
-              systemInstruction: ctx.systemInstruction,
-              thinkingConfig: { thinkingLevel: attempt.level },
-            },
-          }),
-          new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error('Request timeout while waiting for AI model')), 9000),
-          ),
-        ]);
-
-        for await (const chunk of stream) {
-          const delta = chunk.text;
-          if (delta) {
-            emittedAny = true;
-            sendEvent({ delta });
+    let attemptIndex = 0;
+    let emittedAny = false;
+    try {
+      await retryWithExponentialBackoff(
+        async () => {
+          if (req.destroyed || res.writableEnded) {
+            return;
           }
-        }
+          const attempt =
+            AI_ATTEMPT_SCHEDULE[Math.min(attemptIndex, AI_ATTEMPT_SCHEDULE.length - 1)];
+          attemptIndex += 1;
 
-        if (emittedAny) {
-          sendEvent({ done: true });
-          res.end();
-          return;
-        }
-        lastErrorMessage = 'Empty model response.';
-      } catch (err) {
-        lastErrorMessage =
-          err instanceof Error ? err.message : 'Unable to reach Gemini API right now.';
-        if (emittedAny) {
-          sendEvent({ done: true });
-          res.end();
-          return;
-        }
-        const lower = lastErrorMessage.toLowerCase();
-        const isTransient =
-          lower.includes('503') ||
-          lower.includes('500') ||
-          lower.includes('429') ||
-          lower.includes('unavailable') ||
-          lower.includes('high demand') ||
-          lower.includes('resource_exhausted') ||
-          lower.includes('fetch') ||
-          lower.includes('timeout');
-        if (!isTransient) {
-          break;
-        }
-        await new Promise((resolve) => setTimeout(resolve, 100));
+          const stream = await withTimeout(
+            ai.models.generateContentStream({
+              model: attempt.model,
+              contents: ctx.normalizedTurns,
+              config: buildGeminiConfig(attempt, ctx.systemInstruction),
+            }),
+            10000,
+          );
+
+          for await (const chunk of stream) {
+            const delta = chunk.text;
+            if (delta) {
+              emittedAny = true;
+              sendEvent({ delta });
+            }
+          }
+
+          if (!emittedAny) {
+            throw new Error('Empty model response.');
+          }
+        },
+        {
+          maxRetries: 3,
+          baseDelayMs: 400,
+          maxDelayMs: 2000,
+          shouldRetry: (err) => !emittedAny && !req.destroyed && isTransientGeminiApiError(err),
+        },
+      );
+
+      sendEvent({ done: true });
+      res.end();
+    } catch (err) {
+      if (emittedAny) {
+        sendEvent({ done: true });
+        res.end();
+        return;
       }
+      const rawMessage =
+        err instanceof Error ? err.message : 'Unable to reach Gemini API right now.';
+      sendEvent({ error: formatFriendlyAiError(rawMessage) });
+      res.end();
     }
-
-    sendEvent({ error: formatFriendlyAiError(lastErrorMessage) });
-    res.end();
   });
 
-  // Advice Mission AI JSON endpoint (fast-first non-streaming fallback)
+  // Advice Mission AI JSON endpoint (3 exponential-backoff retries fallback)
   app.post('/api/ai/ask', async (req: Request, res: Response) => {
     const { messages, languagePreference } = req.body as {
       messages?: Array<{ role: 'user' | 'assistant'; text: string }>;
@@ -350,53 +389,46 @@ Rules:
       return;
     }
 
-    let lastErrorMessage = '';
-    for (let i = 0; i < FAST_AI_MODELS.length; i += 1) {
-      const attempt = FAST_AI_MODELS[i];
-      try {
-        const response = await Promise.race([
-          ai.models.generateContent({
-            model: attempt.model,
-            contents: ctx.normalizedTurns,
-            config: {
-              systemInstruction: ctx.systemInstruction,
-              thinkingConfig: { thinkingLevel: attempt.level },
-            },
-          }),
-          new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error('Request timeout while waiting for AI model')), 9000),
-          ),
-        ]);
+    let attemptIndex = 0;
+    try {
+      const answer = await retryWithExponentialBackoff(
+        async () => {
+          const attempt =
+            AI_ATTEMPT_SCHEDULE[Math.min(attemptIndex, AI_ATTEMPT_SCHEDULE.length - 1)];
+          attemptIndex += 1;
 
-        const answer = response.text?.trim();
-        if (answer) {
-          res.json({ answer });
-          return;
-        }
-        lastErrorMessage = 'Empty model response.';
-      } catch (err) {
-        lastErrorMessage =
-          err instanceof Error ? err.message : 'Unable to reach Gemini API right now.';
-        const lower = lastErrorMessage.toLowerCase();
-        const isTransient =
-          lower.includes('503') ||
-          lower.includes('500') ||
-          lower.includes('429') ||
-          lower.includes('unavailable') ||
-          lower.includes('high demand') ||
-          lower.includes('resource_exhausted') ||
-          lower.includes('fetch') ||
-          lower.includes('timeout');
-        if (!isTransient) {
-          break;
-        }
-        await new Promise((resolve) => setTimeout(resolve, 100));
-      }
+          const response = await withTimeout(
+            ai.models.generateContent({
+              model: attempt.model,
+              contents: ctx.normalizedTurns,
+              config: buildGeminiConfig(attempt, ctx.systemInstruction),
+            }),
+            10000,
+          );
+
+          const text = response.text?.trim();
+          if (!text) {
+            throw new Error('Empty model response.');
+          }
+          return text;
+        },
+        {
+          maxRetries: 3,
+          baseDelayMs: 400,
+          maxDelayMs: 2000,
+          shouldRetry: isTransientGeminiApiError,
+        },
+      );
+
+      res.json({ answer });
+    } catch (err) {
+      const rawMessage =
+        err instanceof Error ? err.message : 'Unable to reach Gemini API right now.';
+      const statusCode = isTransientGeminiApiError(err) ? 503 : 502;
+      res.status(statusCode).json({
+        error: formatFriendlyAiError(rawMessage),
+      });
     }
-
-    res.status(502).json({
-      error: formatFriendlyAiError(lastErrorMessage),
-    });
   });
 
   // Admin Login Verification

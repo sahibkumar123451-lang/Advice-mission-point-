@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
-import { RotateCcw, Send, AlertCircle, MessageSquareText } from 'lucide-react';
+import { RotateCcw, Send, Sparkles, MessageSquareText, Edit3 } from 'lucide-react';
 import type { ChatMessage } from '../types/coaching';
+import { formatFriendlyAiError, retryWithExponentialBackoff } from '../utils/coachingLogic';
 
 interface AdviceMissionAIProps {
   externalPrompt?: string | null;
@@ -80,34 +81,70 @@ export function AdviceMissionAI({
     }
   }, [messages, loading]);
 
-  async function askQuestion(questionText: string) {
+  async function askQuestion(
+    questionText: string,
+    options: { reuseLastUserBubble?: boolean } = {},
+  ) {
     const trimmed = questionText.trim();
     if (!trimmed || loading) return;
 
     setError(null);
     setLastFailedQuestion(null);
-    const prevMessages = messages;
-    const userMsg: ChatMessage = {
-      id: `u-${Date.now()}`,
-      role: 'user',
-      text: trimmed,
-      createdAt: new Date().toISOString(),
-    };
 
-    const nextMessages = [...prevMessages, userMsg];
-    setMessages(nextMessages);
-    setInput('');
+    const lastMsg = messages[messages.length - 1];
+    const shouldReuseBubble =
+      Boolean(options.reuseLastUserBubble) &&
+      lastMsg?.role === 'user' &&
+      lastMsg.text.trim() === trimmed;
+
+    const nextMessages: ChatMessage[] = shouldReuseBubble
+      ? messages
+      : [
+          ...messages,
+          {
+            id: `u-${Date.now()}`,
+            role: 'user',
+            text: trimmed,
+            createdAt: new Date().toISOString(),
+          },
+        ];
+
+    if (!shouldReuseBubble) {
+      setMessages(nextMessages);
+      setInput('');
+    }
     setLoading(true);
 
     try {
-      const response = await fetch('/api/ai/stream', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          messages: nextMessages.map((m) => ({ role: m.role, text: m.text })),
-          languagePreference: languagePref,
-        }),
-      });
+      const response = await retryWithExponentialBackoff(
+        async () => {
+          const res = await fetch('/api/ai/stream', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              messages: nextMessages.map((m) => ({ role: m.role, text: m.text })),
+              languagePreference: languagePref,
+            }),
+          });
+          if (res.status === 502 || res.status === 503 || res.status === 504 || res.status === 429) {
+            throw new Error(`HTTP ${res.status}`);
+          }
+          return res;
+        },
+        {
+          maxRetries: 1,
+          baseDelayMs: 500,
+          shouldRetry: (err) => {
+            const msg = err instanceof Error ? err.message.toLowerCase() : '';
+            return (
+              msg.includes('http 50') ||
+              msg.includes('http 429') ||
+              msg.includes('failed to fetch') ||
+              msg.includes('network')
+            );
+          },
+        },
+      );
 
       const contentType = response.headers.get('content-type') || '';
       if (!response.ok || !response.body || contentType.includes('application/json')) {
@@ -118,12 +155,10 @@ export function AdviceMissionAI({
         } catch {
           data = {};
         }
-        setMessages(prevMessages);
-        setInput(trimmed);
         setLastFailedQuestion(trimmed);
         setError(
           data.error ||
-            'Advice Mission AI is temporarily busy. Please click Retry in a moment.',
+            formatFriendlyAiError(`HTTP ${response.status}`),
         );
         return;
       }
@@ -186,24 +221,22 @@ export function AdviceMissionAI({
       }
 
       if (streamError && !accumulatedText.trim()) {
-        setMessages(prevMessages);
-        setInput(trimmed);
         setLastFailedQuestion(trimmed);
         setError(streamError);
         return;
       }
 
       if (!accumulatedText.trim()) {
-        setMessages(prevMessages);
-        setInput(trimmed);
         setLastFailedQuestion(trimmed);
-        setError('Advice Mission AI could not complete this answer. Please click Retry.');
+        setError(formatFriendlyAiError('empty'));
       }
-    } catch {
-      setMessages(prevMessages);
-      setInput(trimmed);
+    } catch (err) {
       setLastFailedQuestion(trimmed);
-      setError('Network error while contacting Advice Mission AI. Please click Retry.');
+      setError(
+        formatFriendlyAiError(
+          err instanceof Error ? err.message : 'network error',
+        ),
+      );
     } finally {
       setLoading(false);
     }
@@ -267,6 +300,7 @@ export function AdviceMissionAI({
                 onClick={() => {
                   setMessages([]);
                   setError(null);
+                  setLastFailedQuestion(null);
                 }}
                 className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 rounded-lg transition-colors whitespace-nowrap cursor-pointer"
               >
@@ -357,23 +391,44 @@ export function AdviceMissionAI({
 
             {error && (
               <div
-                role="alert"
-                className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3.5 rounded-xl bg-red-50 border border-red-200 text-red-800 text-sm"
+                role="status"
+                aria-live="polite"
+                className="flex justify-start"
               >
-                <div className="flex items-start gap-2.5">
-                  <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" aria-hidden="true" />
-                  <span>{error}</span>
+                <div className="max-w-[92%] sm:max-w-[82%] rounded-2xl px-4 py-3.5 bg-amber-50/80 border border-amber-200/90 text-slate-800 text-sm space-y-2.5">
+                  <div className="flex items-start gap-2.5">
+                    <Sparkles className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" aria-hidden="true" />
+                    <p className="leading-relaxed text-slate-800">{error}</p>
+                  </div>
+                  {lastFailedQuestion && (
+                    <div className="flex flex-wrap items-center gap-2 pl-6">
+                      <button
+                        type="button"
+                        disabled={loading}
+                        onClick={() =>
+                          void askQuestion(lastFailedQuestion, { reuseLastUserBubble: true })
+                        }
+                        className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-slate-900 hover:bg-slate-800 disabled:opacity-50 rounded-lg whitespace-nowrap cursor-pointer"
+                      >
+                        <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" />
+                        <span>Ask Again</span>
+                      </button>
+                      <button
+                        type="button"
+                        disabled={loading}
+                        onClick={() => {
+                          setInput(lastFailedQuestion);
+                          setError(null);
+                          inputRef.current?.focus();
+                        }}
+                        className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-700 bg-white border border-slate-300 hover:bg-slate-50 rounded-lg whitespace-nowrap cursor-pointer"
+                      >
+                        <Edit3 className="w-3.5 h-3.5" aria-hidden="true" />
+                        <span>Edit Question</span>
+                      </button>
+                    </div>
+                  )}
                 </div>
-                {lastFailedQuestion && (
-                  <button
-                    type="button"
-                    onClick={() => void askQuestion(lastFailedQuestion)}
-                    className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-red-700 hover:bg-red-800 rounded-lg whitespace-nowrap shrink-0 cursor-pointer"
-                  >
-                    <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" />
-                    <span>Retry</span>
-                  </button>
-                )}
               </div>
             )}
           </div>

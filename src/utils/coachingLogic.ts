@@ -440,22 +440,92 @@ export function mergeSiteDataPreserveExisting(
   };
 }
 
+export function isTransientGeminiApiError(error: unknown): boolean {
+  const raw =
+    error instanceof Error
+      ? `${(error as { status?: unknown; code?: unknown }).status ?? ''} ${(error as { code?: unknown }).code ?? ''} ${error.message}`
+      : typeof error === 'object' && error !== null
+        ? JSON.stringify(error)
+        : String(error ?? '');
+  const lower = raw.toLowerCase();
+  if (!lower.trim()) return false;
+
+  // Never retry invalid auth / bad model / bad request errors
+  if (
+    lower.includes('api_key_invalid') ||
+    lower.includes('permission_denied') ||
+    lower.includes('403') ||
+    lower.includes('invalid_argument') ||
+    lower.includes('not_found') ||
+    lower.includes('404') ||
+    /\b400\b/.test(lower)
+  ) {
+    return false;
+  }
+
+  return (
+    lower.includes('503') ||
+    lower.includes('429') ||
+    lower.includes('500') ||
+    lower.includes('502') ||
+    lower.includes('504') ||
+    lower.includes('unavailable') ||
+    lower.includes('service unavailable') ||
+    lower.includes('high demand') ||
+    lower.includes('overloaded') ||
+    lower.includes('resource_exhausted') ||
+    lower.includes('too many requests') ||
+    lower.includes('rate limit') ||
+    lower.includes('quota') ||
+    lower.includes('timeout') ||
+    lower.includes('timed out') ||
+    lower.includes('deadline_exceeded') ||
+    lower.includes('econnreset') ||
+    lower.includes('etimedout') ||
+    lower.includes('fetch') ||
+    lower.includes('network') ||
+    lower.includes('empty model response')
+  );
+}
+
 export function formatFriendlyAiError(rawMessage: string): string {
   const lower = rawMessage.toLowerCase();
   if (lower.includes('api_key_invalid') || lower.includes('permission_denied') || lower.includes('403')) {
-    return 'Gemini API key is missing or invalid in Settings > Secrets. Please verify the API key and try again.';
+    return 'Gemini API key needs attention in Settings > Secrets before Advice Mission AI can answer.';
   }
-  if (lower.includes('resource_exhausted') || lower.includes('429') || lower.includes('quota')) {
-    return 'Advice Mission AI has reached its temporary request limit. Please wait a few seconds and click Retry (कृपया कुछ सेकंड प्रतीक्षा करें और पुनः प्रयास करें).';
+  if (
+    lower.includes('resource_exhausted') ||
+    lower.includes('429') ||
+    lower.includes('too many requests') ||
+    lower.includes('rate limit') ||
+    lower.includes('quota')
+  ) {
+    return 'Too many questions arrived at once — wait a couple of seconds and click Ask Again. Your question is saved right here (एक साथ कई प्रश्न आए हैं, कृपया कुछ सेकंड बाद Ask Again दबाएं).';
   }
-  if (lower.includes('503') || lower.includes('unavailable') || lower.includes('high demand') || lower.includes('overloaded')) {
-    return 'AI server is temporarily busy due to high demand. Please click Retry in a moment (सर्वर अभी व्यस्त है, कृपया कुछ सेकंड बाद पुनः प्रयास करें).';
+  if (
+    lower.includes('503') ||
+    lower.includes('unavailable') ||
+    lower.includes('high demand') ||
+    lower.includes('overloaded')
+  ) {
+    return 'The AI service experienced heavy traffic and could not reply yet. Your question is saved — click Ask Again to send it once more (उच्च ट्रैफ़िक के कारण उत्तर नहीं मिल सका, कृपया Ask Again दबाएं).';
+  }
+  if (
+    lower.includes('timeout') ||
+    lower.includes('timed out') ||
+    lower.includes('deadline_exceeded') ||
+    lower.includes('504') ||
+    lower.includes('fetch') ||
+    lower.includes('network')
+  ) {
+    return 'The reply took longer than expected due to a brief connection delay. Your question is saved — click Ask Again to continue (कनेक्शन में देरी हुई, कृपया Ask Again दबाएं).';
   }
   if (lower.includes('not_found') || lower.includes('404')) {
-    return 'The requested AI model is currently unavailable. Please retry in a moment.';
+    return 'The requested AI model is currently unavailable. Click Ask Again in a moment to try the backup model.';
   }
-  return 'Advice Mission AI could not complete this answer right now. Please click Retry or rephrase your question.';
+  return 'Could not finish this answer right now. Your question is saved right here — click Ask Again to continue.';
 }
+
 
 export const ADMIN_PASSCODE_SALT = 'amp-admin-rauli-v1';
 export const ADMIN_PASSCODE_HASH =
