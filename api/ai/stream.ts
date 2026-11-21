@@ -12,7 +12,7 @@ import {
   sendJson,
   setCorsHeaders,
   type AiChatInputMessage,
-} from '../_lib/geminiAi';
+} from '../_lib/geminiAi'js;
 
 export default async function handler(
   req: IncomingMessage & { body?: unknown },
