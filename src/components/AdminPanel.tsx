@@ -38,6 +38,14 @@ import {
   isPdfFileOrUrl,
   isVideoFileOrUrl,
   mergeSiteDataPreserveExisting,
+  normalizeExternalUrl,
+  normalizeSafeMediaOrExternalUrl,
+  normalizeWhatsAppUrl,
+  validateCoachingInfo,
+  validateGalleryInput,
+  validateLearningResourceInput,
+  validateTeacherProfile,
+  verifyAdminPasscodeHash,
 } from '../utils/coachingLogic';
 import {
   deleteGalleryItemFromCloud,
@@ -53,6 +61,7 @@ import {
   syncSiteDataToCloudNonDestructive,
 } from '../utils/firebaseClient';
 import { compressImageToDataUrl, readSmallPdfAsDataUrl } from '../utils/mediaHelpers';
+import { DEFAULT_SITE_DATA } from '../utils/seedData';
 import { ResilientImage } from './ResilientImage';
 
 interface AdminPanelProps {
@@ -155,13 +164,21 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
   }, [isOpen, initialTab]);
 
   async function fetchAdminData(token: string) {
-    const res = await fetch('/api/admin/data', {
-      headers: { 'x-admin-token': token },
-    });
-    if (!res.ok) {
-      throw new Error('Failed to load admin workspace.');
+    let data: SiteData = structuredClone(DEFAULT_SITE_DATA);
+    const isCloudSession = token === 'cloud-session';
+
+    if (!isCloudSession) {
+      try {
+        const res = await fetch('/api/admin/data', {
+          headers: { 'x-admin-token': token },
+        });
+        if (res.ok) {
+          data = (await res.json()) as SiteData;
+        }
+      } catch {
+        // Fall back to default + Firestore data if backend is unavailable
+      }
     }
-    let data = (await res.json()) as SiteData;
 
     try {
       const cloudData = await loadAllAdminSiteDataFromFirestore();
@@ -174,9 +191,17 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
       );
       if (hasCloud) {
         data = mergeSiteDataPreserveExisting(data, cloudData);
+        if (isCloudSession) {
+          if (cloudData.gallery && cloudData.gallery.length > 0) {
+            data.gallery = cloudData.gallery;
+          }
+          if (cloudData.learningHub && cloudData.learningHub.length > 0) {
+            data.learningHub = cloudData.learningHub;
+          }
+        }
       }
     } catch {
-      // Keep local server data if Firestore isn't populated yet
+      // Keep local/default data if Firestore isn't populated yet
     }
 
     setAdminData(data);
@@ -185,6 +210,20 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
     setTeacherForm(data.teacher);
     setSkillsText(data.teacher.skills.join('\n'));
     setSubjectsText(data.teacher.subjectsTaught.join(', '));
+  }
+
+  async function ensureCloudWriterReady(): Promise<boolean> {
+    if (cloudUser) return true;
+    try {
+      const user = await signInAdminWithGoogle();
+      setCloudUser(user);
+      return true;
+    } catch {
+      setErrorMessage(
+        'Please click "Connect Cloud Sync" and sign in with your owner Google account so changes appear live everywhere.',
+      );
+      return false;
+    }
   }
 
   async function handleConnectCloudSync() {
@@ -266,22 +305,38 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
       const text = await file.text();
       const parsed = JSON.parse(text) as { data?: Partial<SiteData> } & Partial<SiteData>;
       const backupData = parsed.data || parsed;
-      const res = await fetch('/api/admin/restore', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-admin-token': authToken,
-        },
-        body: JSON.stringify({ data: backupData, mode: 'merge' }),
-      });
-      const body = (await res.json()) as { data?: SiteData; error?: string };
-      if (!res.ok || !body.data) {
-        setErrorMessage(body.error || 'Could not merge backup file.');
-        return;
+
+      let restoredData: SiteData | null = null;
+      if (authToken !== 'cloud-session') {
+        try {
+          const res = await fetch('/api/admin/restore', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-admin-token': authToken,
+            },
+            body: JSON.stringify({ data: backupData, mode: 'merge' }),
+          });
+          if (res.ok) {
+            const body = (await res.json()) as { data?: SiteData; error?: string };
+            if (body.data) restoredData = body.data;
+          }
+        } catch {
+          // Fall back to direct cloud merge below
+        }
       }
-      if (cloudUser) {
-        await syncSiteDataToCloudNonDestructive(body.data);
+
+      if (!restoredData && adminData) {
+        restoredData = mergeSiteDataPreserveExisting(adminData, backupData);
       }
+
+      if (restoredData && (cloudUser || authToken === 'cloud-session')) {
+        const ready = await ensureCloudWriterReady();
+        if (ready) {
+          await syncSiteDataToCloudNonDestructive(restoredData);
+        }
+      }
+
       await fetchAdminData(authToken);
       await onSiteUpdated();
       setStatusMessage('Backup merged cleanly — all previous and restored items are preserved.');
@@ -297,19 +352,48 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
     setAuthError(null);
     setLoggingIn(true);
     try {
-      const res = await fetch('/api/admin/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ passcode }),
-      });
-      const body = (await res.json()) as { ok?: boolean; token?: string; error?: string };
-      if (!res.ok || !body.token) {
-        setAuthError(body.error || 'Incorrect passcode.');
-        return;
+      let fallbackToCloudLogin = false;
+
+      try {
+        const res = await fetch('/api/admin/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ passcode }),
+        });
+
+        const contentType = res.headers.get('content-type') || '';
+        if (res.ok && contentType.includes('application/json')) {
+          const body = (await res.json()) as { ok?: boolean; token?: string; error?: string };
+          if (body.token) {
+            await fetchAdminData(body.token);
+            setAuthToken(body.token);
+            setPasscode('');
+            return;
+          }
+        }
+
+        if (res.status === 401) {
+          const body = (await res.json().catch(() => ({}))) as { error?: string };
+          setAuthError(body.error || 'Incorrect admin passcode.');
+          return;
+        }
+
+        // Static deployments (e.g. Vercel) return 404/405/HTML for /api/admin/login
+        fallbackToCloudLogin = true;
+      } catch {
+        fallbackToCloudLogin = true;
       }
-      await fetchAdminData(body.token);
-      setAuthToken(body.token);
-      setPasscode('');
+
+      if (fallbackToCloudLogin) {
+        const valid = await verifyAdminPasscodeHash(passcode);
+        if (!valid) {
+          setAuthError('Incorrect admin passcode.');
+          return;
+        }
+        await fetchAdminData('cloud-session');
+        setAuthToken('cloud-session');
+        setPasscode('');
+      }
     } catch {
       setAuthError('Unable to verify admin passcode.');
     } finally {
@@ -322,7 +406,7 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
     setUploadingFile(true);
     setErrorMessage(null);
     try {
-      // Persist photos & compact PDFs as Firestore-safe data URLs when possible so they survive publishes
+      // Persist photos & compact PDFs as Firestore-safe data URLs when possible so they live-sync everywhere
       if (file.type.startsWith('image/')) {
         const compressed = await compressImageToDataUrl(file);
         if (compressed) {
@@ -332,6 +416,13 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
       const compactPdf = await readSmallPdfAsDataUrl(file);
       if (compactPdf) {
         return compactPdf;
+      }
+
+      if (authToken === 'cloud-session') {
+        setErrorMessage(
+          'Videos or large PDFs over 550 KB on static hosting should be added via YouTube / Google Drive link.',
+        );
+        return null;
       }
 
       const res = await fetch('/api/admin/upload-file', {
@@ -360,6 +451,9 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
 
   async function handleBulkGalleryUpload(files: FileList | null) {
     if (!authToken || !files || files.length === 0) return;
+    const isCloudOnly = authToken === 'cloud-session';
+    if (isCloudOnly && !(await ensureCloudWriterReady())) return;
+
     const fileArray = Array.from(files);
     setSaving(true);
     setStatusMessage(null);
@@ -379,26 +473,50 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
           bulkGalleryCategory,
         );
         const title = formatTitleFromFilename(file.name);
+        let itemToSync: GalleryItem | null = null;
 
-        const res = await fetch('/api/admin/gallery', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'x-admin-token': authToken,
-          },
-          body: JSON.stringify({
+        if (!isCloudOnly) {
+          try {
+            const res = await fetch('/api/admin/gallery', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'x-admin-token': authToken,
+              },
+              body: JSON.stringify({
+                title,
+                caption: '',
+                category: detected.category,
+                mediaType: detected.mediaType,
+                mediaUrl: uploadedUrl,
+                published: true,
+              }),
+            });
+            if (res.ok) {
+              const created = (await res.json()) as { item?: GalleryItem };
+              itemToSync = created.item || null;
+            }
+          } catch {
+            // Fall back to direct cloud creation below
+          }
+        }
+
+        if (!itemToSync && (isCloudOnly || cloudUser)) {
+          itemToSync = {
+            id: `gal-${crypto.randomUUID().slice(0, 8)}`,
             title,
             caption: '',
             category: detected.category,
             mediaType: detected.mediaType,
             mediaUrl: uploadedUrl,
             published: true,
-          }),
-        });
-        if (res.ok) {
-          const created = (await res.json()) as { item?: GalleryItem };
-          if (created.item && cloudUser) {
-            await saveGalleryItemToCloud(created.item);
+            createdAt: new Date().toISOString(),
+          };
+        }
+
+        if (itemToSync) {
+          if (cloudUser) {
+            await saveGalleryItemToCloud(itemToSync);
           }
           successCount += 1;
         }
@@ -406,7 +524,9 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
       await fetchAdminData(authToken);
       await onSiteUpdated();
       setStatusMessage(
-        `${successCount} file${successCount === 1 ? '' : 's'} uploaded and published to the gallery.`,
+        cloudUser
+          ? `${successCount} file${successCount === 1 ? '' : 's'} uploaded and synced LIVE everywhere.`
+          : `${successCount} file${successCount === 1 ? '' : 's'} saved locally. Connect Cloud Sync above to publish live everywhere.`,
       );
     } finally {
       setBulkUploadProgress(null);
@@ -416,6 +536,9 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
 
   async function replaceGalleryItemMedia(item: GalleryItem, file: File) {
     if (!authToken) return;
+    const isCloudOnly = authToken === 'cloud-session';
+    if (isCloudOnly && !(await ensureCloudWriterReady())) return;
+
     setSaving(true);
     setStatusMessage(null);
     setErrorMessage(null);
@@ -423,37 +546,63 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
       const uploadedUrl = await uploadSelectedFile(file);
       if (!uploadedUrl) return;
       const detected = detectUploadCategoryAndType(file.name, file.type || '', item.category);
-      const res = await fetch(`/api/admin/gallery/${item.id}`, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-admin-token': authToken,
-        },
-        body: JSON.stringify({
+      const resolvedCategory: GalleryCategory =
+        detected.mediaType === 'pdf'
+          ? 'pdfs'
+          : detected.mediaType === 'video'
+            ? 'videos'
+            : item.category === 'videos' || item.category === 'pdfs'
+              ? 'coaching'
+              : item.category;
+
+      let updatedItem: GalleryItem | null = null;
+      if (!isCloudOnly) {
+        try {
+          const res = await fetch(`/api/admin/gallery/${item.id}`, {
+            method: 'PUT',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-admin-token': authToken,
+            },
+            body: JSON.stringify({
+              mediaUrl: uploadedUrl,
+              mediaType: detected.mediaType,
+              category: resolvedCategory,
+            }),
+          });
+          if (res.ok) {
+            const updatedBody = (await res.json()) as { item?: GalleryItem };
+            updatedItem = updatedBody.item || null;
+          }
+        } catch {
+          // Fall back to direct cloud update
+        }
+      }
+
+      if (!updatedItem && (isCloudOnly || cloudUser)) {
+        updatedItem = {
+          ...item,
           mediaUrl: uploadedUrl,
           mediaType: detected.mediaType,
-          category:
-            detected.mediaType === 'pdf'
-              ? 'pdfs'
-              : detected.mediaType === 'video'
-                ? 'videos'
-                : item.category === 'videos' || item.category === 'pdfs'
-                  ? 'coaching'
-                  : item.category,
-        }),
-      });
-      if (!res.ok) {
-        const body = (await res.json()) as { error?: string };
-        setErrorMessage(body.error || 'Could not replace media file.');
+          category: resolvedCategory,
+        };
+      }
+
+      if (!updatedItem) {
+        setErrorMessage('Could not replace media file.');
         return;
       }
-      const updatedBody = (await res.json()) as { item?: GalleryItem };
-      if (updatedBody.item && cloudUser) {
-        await saveGalleryItemToCloud(updatedBody.item);
+
+      if (cloudUser) {
+        await saveGalleryItemToCloud(updatedItem);
       }
       await fetchAdminData(authToken);
       await onSiteUpdated();
-      setStatusMessage(`Replaced media for "${item.title}".`);
+      setStatusMessage(
+        cloudUser
+          ? `Replaced media for "${item.title}" — live everywhere!`
+          : `Replaced media for "${item.title}" locally.`,
+      );
     } finally {
       setSaving(false);
     }
@@ -461,6 +610,9 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
 
   async function handleBulkPdfUpload(files: FileList | null) {
     if (!authToken || !files || files.length === 0) return;
+    const isCloudOnly = authToken === 'cloud-session';
+    if (isCloudOnly && !(await ensureCloudWriterReady())) return;
+
     const fileArray = Array.from(files);
     setSaving(true);
     setStatusMessage(null);
@@ -474,13 +626,39 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
         const uploadedUrl = await uploadSelectedFile(file);
         if (!uploadedUrl) continue;
 
-        const res = await fetch('/api/admin/hub', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'x-admin-token': authToken,
-          },
-          body: JSON.stringify({
+        let resourceToSync: LearningResource | null = null;
+        if (!isCloudOnly) {
+          try {
+            const res = await fetch('/api/admin/hub', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'x-admin-token': authToken,
+              },
+              body: JSON.stringify({
+                title: formatTitleFromFilename(file.name),
+                topicArea: bulkPdfTopic.trim() || 'Study Notes & PDFs',
+                summary: `Downloadable PDF notes: ${file.name}`,
+                content: 'Click Open or Download PDF below to read this study sheet.',
+                languageNote: 'Hindi + English Bilingual',
+                keyFormulas: [],
+                pdfUrl: uploadedUrl,
+                pdfName: file.name,
+                published: true,
+              }),
+            });
+            if (res.ok) {
+              const created = (await res.json()) as { resource?: LearningResource };
+              resourceToSync = created.resource || null;
+            }
+          } catch {
+            // Fall back to direct cloud creation
+          }
+        }
+
+        if (!resourceToSync && (isCloudOnly || cloudUser)) {
+          resourceToSync = {
+            id: `hub-${crypto.randomUUID().slice(0, 8)}`,
             title: formatTitleFromFilename(file.name),
             topicArea: bulkPdfTopic.trim() || 'Study Notes & PDFs',
             summary: `Downloadable PDF notes: ${file.name}`,
@@ -490,12 +668,13 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
             pdfUrl: uploadedUrl,
             pdfName: file.name,
             published: true,
-          }),
-        });
-        if (res.ok) {
-          const created = (await res.json()) as { resource?: LearningResource };
-          if (created.resource && cloudUser) {
-            await saveLearningResourceToCloud(created.resource);
+            updatedAt: new Date().toISOString(),
+          };
+        }
+
+        if (resourceToSync) {
+          if (cloudUser) {
+            await saveLearningResourceToCloud(resourceToSync);
           }
           successCount += 1;
         }
@@ -503,7 +682,9 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
       await fetchAdminData(authToken);
       await onSiteUpdated();
       setStatusMessage(
-        `${successCount} PDF${successCount === 1 ? '' : 's'} uploaded and published to Learning Hub.`,
+        cloudUser
+          ? `${successCount} PDF${successCount === 1 ? '' : 's'} uploaded and synced LIVE everywhere.`
+          : `${successCount} PDF${successCount === 1 ? '' : 's'} saved locally.`,
       );
     } finally {
       setBulkUploadProgress(null);
@@ -514,33 +695,77 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
   async function saveCoachingAndSocials(e: React.FormEvent) {
     e.preventDefault();
     if (!authToken || !coachingForm || !socialForm) return;
+    const isCloudOnly = authToken === 'cloud-session';
+    if (isCloudOnly && !(await ensureCloudWriterReady())) return;
+
+    const rawHeroUrl = (coachingForm.heroMediaUrl || '').trim();
+    const nextHeroUrl = rawHeroUrl ? normalizeSafeMediaOrExternalUrl(rawHeroUrl) : '';
+    const nextCoaching: CoachingInfo = {
+      ...coachingForm,
+      heroMediaUrl: nextHeroUrl,
+      heroMediaType:
+        coachingForm.heroMediaType === 'video' || isVideoFileOrUrl(nextHeroUrl)
+          ? 'video'
+          : 'image',
+      googleMapsUrl: normalizeExternalUrl(coachingForm.googleMapsUrl),
+    };
+    const nextSocial: SocialLinks = {
+      whatsapp: normalizeWhatsAppUrl(socialForm.whatsapp),
+      instagram: normalizeExternalUrl(socialForm.instagram),
+      facebook: normalizeExternalUrl(socialForm.facebook),
+      youtube: normalizeExternalUrl(socialForm.youtube),
+    };
+
+    const validation = validateCoachingInfo(nextCoaching, nextSocial);
+    if (!validation.valid) {
+      setErrorMessage(validation.error || 'Please fill all required fields.');
+      return;
+    }
+
     setSaving(true);
     setStatusMessage(null);
     setErrorMessage(null);
     try {
-      const res = await fetch('/api/admin/coaching', {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-admin-token': authToken,
-        },
-        body: JSON.stringify({ coaching: coachingForm, socialLinks: socialForm }),
-      });
-      const body = (await res.json()) as {
-        coaching?: CoachingInfo;
-        socialLinks?: SocialLinks;
-        error?: string;
-      };
-      if (!res.ok) {
-        setErrorMessage(body.error || 'Failed to save coaching details.');
-        return;
+      let savedCoaching = nextCoaching;
+      let savedSocial = nextSocial;
+
+      if (!isCloudOnly) {
+        try {
+          const res = await fetch('/api/admin/coaching', {
+            method: 'PUT',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-admin-token': authToken,
+            },
+            body: JSON.stringify({ coaching: nextCoaching, socialLinks: nextSocial }),
+          });
+          const body = (await res.json()) as {
+            coaching?: CoachingInfo;
+            socialLinks?: SocialLinks;
+            error?: string;
+          };
+          if (!res.ok) {
+            setErrorMessage(body.error || 'Failed to save coaching details.');
+            return;
+          }
+          if (body.coaching) savedCoaching = body.coaching;
+          if (body.socialLinks) savedSocial = body.socialLinks;
+        } catch {
+          // Proceed to cloud save if available
+        }
       }
-      if (cloudUser && body.coaching && body.socialLinks) {
-        await saveCoachingAndSocialsToCloud(body.coaching, body.socialLinks);
+
+      if (cloudUser || isCloudOnly) {
+        await saveCoachingAndSocialsToCloud(savedCoaching, savedSocial);
       }
+
       await fetchAdminData(authToken);
       await onSiteUpdated();
-      setStatusMessage('Coaching information, Google Maps link, and social links saved.');
+      setStatusMessage(
+        cloudUser || isCloudOnly
+          ? 'Coaching info & links saved — live on the website everywhere!'
+          : 'Saved on this server. Connect Cloud Sync above so changes appear live everywhere!',
+      );
     } finally {
       setSaving(false);
     }
@@ -549,40 +774,67 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
   async function saveTeacherProfile(e: React.FormEvent) {
     e.preventDefault();
     if (!authToken || !teacherForm) return;
+    const isCloudOnly = authToken === 'cloud-session';
+    if (isCloudOnly && !(await ensureCloudWriterReady())) return;
+
+    const payload: TeacherProfile = {
+      ...teacherForm,
+      photoUrl: teacherForm.photoUrl
+        ? normalizeSafeMediaOrExternalUrl(teacherForm.photoUrl)
+        : '',
+      skills: skillsText
+        .split('\n')
+        .map((s) => s.trim())
+        .filter(Boolean),
+      subjectsTaught: subjectsText
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean),
+    };
+    const validation = validateTeacherProfile(payload);
+    if (!validation.valid) {
+      setErrorMessage(validation.error || 'Please fill all required teacher details.');
+      return;
+    }
+
     setSaving(true);
     setStatusMessage(null);
     setErrorMessage(null);
     try {
-      const payload: TeacherProfile = {
-        ...teacherForm,
-        skills: skillsText
-          .split('\n')
-          .map((s) => s.trim())
-          .filter(Boolean),
-        subjectsTaught: subjectsText
-          .split(',')
-          .map((s) => s.trim())
-          .filter(Boolean),
-      };
-      const res = await fetch('/api/admin/teacher', {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-admin-token': authToken,
-        },
-        body: JSON.stringify(payload),
-      });
-      const body = (await res.json()) as { teacher?: TeacherProfile; error?: string };
-      if (!res.ok) {
-        setErrorMessage(body.error || 'Failed to save teacher profile.');
-        return;
+      let savedTeacher = payload;
+
+      if (!isCloudOnly) {
+        try {
+          const res = await fetch('/api/admin/teacher', {
+            method: 'PUT',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-admin-token': authToken,
+            },
+            body: JSON.stringify(payload),
+          });
+          const body = (await res.json()) as { teacher?: TeacherProfile; error?: string };
+          if (!res.ok) {
+            setErrorMessage(body.error || 'Failed to save teacher profile.');
+            return;
+          }
+          if (body.teacher) savedTeacher = body.teacher;
+        } catch {
+          // Proceed to cloud save
+        }
       }
-      if (cloudUser && body.teacher) {
-        await saveTeacherToCloud(body.teacher);
+
+      if (cloudUser || isCloudOnly) {
+        await saveTeacherToCloud(savedTeacher);
       }
+
       await fetchAdminData(authToken);
       await onSiteUpdated();
-      setStatusMessage('Teacher profile updated successfully.');
+      setStatusMessage(
+        cloudUser || isCloudOnly
+          ? 'Teacher profile updated — live on the website everywhere!'
+          : 'Saved on this server. Connect Cloud Sync above so changes appear live everywhere!',
+      );
     } finally {
       setSaving(false);
     }
@@ -616,45 +868,79 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
   async function saveNewGalleryItem(e: React.FormEvent) {
     e.preventDefault();
     if (!authToken) return;
+    const isCloudOnly = authToken === 'cloud-session';
+    if (isCloudOnly && !(await ensureCloudWriterReady())) return;
+
+    const resolvedType: MediaType =
+      galCategory === 'pdfs' || isPdfFileOrUrl(galMediaUrl)
+        ? 'pdf'
+        : galCategory === 'videos' || isVideoFileOrUrl(galMediaUrl)
+          ? 'video'
+          : galMediaType;
+
+    const draftItem: GalleryItem = {
+      id: `gal-${crypto.randomUUID().slice(0, 8)}`,
+      title: galTitle.trim(),
+      caption: galCaption.trim(),
+      category: galCategory,
+      mediaType: resolvedType,
+      mediaUrl: galMediaUrl.trim(),
+      thumbnailUrl: galThumbUrl.trim() || undefined,
+      published: galPublished,
+      createdAt: new Date().toISOString(),
+    };
+    const validation = validateGalleryInput(draftItem);
+    if (!validation.valid) {
+      setErrorMessage(validation.error || 'Please provide valid gallery item details.');
+      return;
+    }
+
     setSaving(true);
     setStatusMessage(null);
     setErrorMessage(null);
     try {
-      const resolvedType: MediaType =
-        galCategory === 'pdfs' || isPdfFileOrUrl(galMediaUrl)
-          ? 'pdf'
-          : galCategory === 'videos' || isVideoFileOrUrl(galMediaUrl)
-            ? 'video'
-            : galMediaType;
+      let itemToSync = draftItem;
 
-      const res = await fetch('/api/admin/gallery', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-admin-token': authToken,
-        },
-        body: JSON.stringify({
-          title: galTitle,
-          caption: galCaption,
-          category: galCategory,
-          mediaType: resolvedType,
-          mediaUrl: galMediaUrl,
-          thumbnailUrl: galThumbUrl || undefined,
-          published: galPublished,
-        }),
-      });
-      const body = (await res.json()) as { item?: GalleryItem; error?: string };
-      if (!res.ok) {
-        setErrorMessage(body.error || 'Unable to save gallery item.');
-        return;
+      if (!isCloudOnly) {
+        try {
+          const res = await fetch('/api/admin/gallery', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-admin-token': authToken,
+            },
+            body: JSON.stringify({
+              title: galTitle,
+              caption: galCaption,
+              category: galCategory,
+              mediaType: resolvedType,
+              mediaUrl: galMediaUrl,
+              thumbnailUrl: galThumbUrl || undefined,
+              published: galPublished,
+            }),
+          });
+          const body = (await res.json()) as { item?: GalleryItem; error?: string };
+          if (!res.ok) {
+            setErrorMessage(body.error || 'Unable to save gallery item.');
+            return;
+          }
+          if (body.item) itemToSync = body.item;
+        } catch {
+          // Proceed to cloud save
+        }
       }
-      if (cloudUser && body.item) {
-        await saveGalleryItemToCloud(body.item);
+
+      if (cloudUser || isCloudOnly) {
+        await saveGalleryItemToCloud(itemToSync);
       }
       resetGalleryForm();
       await fetchAdminData(authToken);
       await onSiteUpdated();
-      setStatusMessage('New photo, video, or PDF added to the gallery.');
+      setStatusMessage(
+        cloudUser || isCloudOnly
+          ? 'New photo, video, or PDF published LIVE everywhere!'
+          : 'New item saved locally. Connect Cloud Sync above to publish everywhere.',
+      );
     } finally {
       setSaving(false);
     }
@@ -662,45 +948,80 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
 
   async function saveInlineGalleryEdit(id: string) {
     if (!authToken) return;
+    const isCloudOnly = authToken === 'cloud-session';
+    if (isCloudOnly && !(await ensureCloudWriterReady())) return;
+
+    const resolvedType: MediaType =
+      inlineGalCategory === 'pdfs' || isPdfFileOrUrl(inlineGalMediaUrl)
+        ? 'pdf'
+        : inlineGalCategory === 'videos' || isVideoFileOrUrl(inlineGalMediaUrl)
+          ? 'video'
+          : inlineGalMediaType;
+
+    const existingItem = adminData?.gallery.find((g) => g.id === id);
+    const nextItem: GalleryItem = {
+      id,
+      title: inlineGalTitle.trim(),
+      caption: inlineGalCaption.trim(),
+      category: inlineGalCategory,
+      mediaType: resolvedType,
+      mediaUrl: inlineGalMediaUrl.trim(),
+      thumbnailUrl: inlineGalThumbUrl.trim() || undefined,
+      published: inlineGalPublished,
+      createdAt: existingItem?.createdAt || new Date().toISOString(),
+    };
+    const validation = validateGalleryInput(nextItem);
+    if (!validation.valid) {
+      setErrorMessage(validation.error || 'Please provide valid gallery item details.');
+      return;
+    }
+
     setSaving(true);
     setStatusMessage(null);
     setErrorMessage(null);
     try {
-      const resolvedType: MediaType =
-        inlineGalCategory === 'pdfs' || isPdfFileOrUrl(inlineGalMediaUrl)
-          ? 'pdf'
-          : inlineGalCategory === 'videos' || isVideoFileOrUrl(inlineGalMediaUrl)
-            ? 'video'
-            : inlineGalMediaType;
+      let itemToSync = nextItem;
 
-      const res = await fetch(`/api/admin/gallery/${id}`, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-admin-token': authToken,
-        },
-        body: JSON.stringify({
-          title: inlineGalTitle,
-          caption: inlineGalCaption,
-          category: inlineGalCategory,
-          mediaType: resolvedType,
-          mediaUrl: inlineGalMediaUrl,
-          thumbnailUrl: inlineGalThumbUrl || undefined,
-          published: inlineGalPublished,
-        }),
-      });
-      const body = (await res.json()) as { item?: GalleryItem; error?: string };
-      if (!res.ok) {
-        setErrorMessage(body.error || 'Unable to update gallery item.');
-        return;
+      if (!isCloudOnly) {
+        try {
+          const res = await fetch(`/api/admin/gallery/${id}`, {
+            method: 'PUT',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-admin-token': authToken,
+            },
+            body: JSON.stringify({
+              title: inlineGalTitle,
+              caption: inlineGalCaption,
+              category: inlineGalCategory,
+              mediaType: resolvedType,
+              mediaUrl: inlineGalMediaUrl,
+              thumbnailUrl: inlineGalThumbUrl || undefined,
+              published: inlineGalPublished,
+            }),
+          });
+          const body = (await res.json()) as { item?: GalleryItem; error?: string };
+          if (!res.ok) {
+            setErrorMessage(body.error || 'Unable to update gallery item.');
+            return;
+          }
+          if (body.item) itemToSync = body.item;
+        } catch {
+          // Proceed to cloud save
+        }
       }
-      if (cloudUser && body.item) {
-        await saveGalleryItemToCloud(body.item);
+
+      if (cloudUser || isCloudOnly) {
+        await saveGalleryItemToCloud(itemToSync);
       }
       setInlineGalId(null);
       await fetchAdminData(authToken);
       await onSiteUpdated();
-      setStatusMessage(`Updated "${inlineGalTitle}".`);
+      setStatusMessage(
+        cloudUser || isCloudOnly
+          ? `Updated "${inlineGalTitle}" — live everywhere!`
+          : `Updated "${inlineGalTitle}" locally.`,
+      );
     } finally {
       setSaving(false);
     }
@@ -708,19 +1029,32 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
 
   async function toggleGalleryPublish(item: GalleryItem) {
     if (!authToken) return;
-    const res = await fetch(`/api/admin/gallery/${item.id}`, {
-      method: 'PUT',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-admin-token': authToken,
-      },
-      body: JSON.stringify({ published: !item.published }),
-    });
-    if (res.ok && cloudUser) {
-      const body = (await res.json()) as { item?: GalleryItem };
-      if (body.item) {
-        await saveGalleryItemToCloud(body.item);
+    const isCloudOnly = authToken === 'cloud-session';
+    if (isCloudOnly && !(await ensureCloudWriterReady())) return;
+
+    let itemToSync: GalleryItem = { ...item, published: !item.published };
+
+    if (!isCloudOnly) {
+      try {
+        const res = await fetch(`/api/admin/gallery/${item.id}`, {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-admin-token': authToken,
+          },
+          body: JSON.stringify({ published: !item.published }),
+        });
+        if (res.ok) {
+          const body = (await res.json()) as { item?: GalleryItem };
+          if (body.item) itemToSync = body.item;
+        }
+      } catch {
+        // Proceed to cloud update
       }
+    }
+
+    if (cloudUser || isCloudOnly) {
+      await saveGalleryItemToCloud(itemToSync);
     }
     await fetchAdminData(authToken);
     await onSiteUpdated();
@@ -728,11 +1062,20 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
 
   async function deleteGalleryItem(id: string) {
     if (!authToken) return;
-    await fetch(`/api/admin/gallery/${id}`, {
-      method: 'DELETE',
-      headers: { 'x-admin-token': authToken },
-    });
-    if (cloudUser) {
+    const isCloudOnly = authToken === 'cloud-session';
+    if (isCloudOnly && !(await ensureCloudWriterReady())) return;
+
+    if (!isCloudOnly) {
+      try {
+        await fetch(`/api/admin/gallery/${id}`, {
+          method: 'DELETE',
+          headers: { 'x-admin-token': authToken },
+        });
+      } catch {
+        // Proceed to cloud delete
+      }
+    }
+    if (cloudUser || isCloudOnly) {
       await deleteGalleryItemFromCloud(id);
     }
     if (inlineGalId === id) {
@@ -775,43 +1118,85 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
   async function saveNewHubResource(e: React.FormEvent) {
     e.preventDefault();
     if (!authToken) return;
+    const isCloudOnly = authToken === 'cloud-session';
+    if (isCloudOnly && !(await ensureCloudWriterReady())) return;
+
+    const cleanPdfUrl = hubPdfUrl.trim() || undefined;
+    const cleanPdfName = hubPdfName.trim() || undefined;
+    const draftResource: LearningResource = {
+      id: `hub-${crypto.randomUUID().slice(0, 8)}`,
+      title: hubTitle.trim(),
+      topicArea: hubTopic.trim(),
+      summary:
+        hubSummary.trim() ||
+        (cleanPdfUrl ? 'Downloadable PDF study guide and reference notes.' : ''),
+      content:
+        hubContent.trim() ||
+        (cleanPdfUrl ? 'Open or download the attached PDF document below to study this topic.' : ''),
+      languageNote: hubLang.trim() || 'Hindi + English Bilingual',
+      keyFormulas: hubFormulasText
+        .split('\n')
+        .map((f) => f.trim())
+        .filter(Boolean),
+      pdfUrl: cleanPdfUrl,
+      pdfName: cleanPdfName,
+      published: hubPublished,
+      updatedAt: new Date().toISOString(),
+    };
+    const validation = validateLearningResourceInput(draftResource);
+    if (!validation.valid) {
+      setErrorMessage(validation.error || 'Please fill all required Learning Hub fields.');
+      return;
+    }
+
     setSaving(true);
     setStatusMessage(null);
     setErrorMessage(null);
     try {
-      const res = await fetch('/api/admin/hub', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-admin-token': authToken,
-        },
-        body: JSON.stringify({
-          title: hubTitle,
-          topicArea: hubTopic,
-          summary: hubSummary,
-          content: hubContent,
-          languageNote: hubLang,
-          keyFormulas: hubFormulasText
-            .split('\n')
-            .map((f) => f.trim())
-            .filter(Boolean),
-          pdfUrl: hubPdfUrl,
-          pdfName: hubPdfName,
-          published: hubPublished,
-        }),
-      });
-      const body = (await res.json()) as { resource?: LearningResource; error?: string };
-      if (!res.ok) {
-        setErrorMessage(body.error || 'Unable to save Learning Hub guide.');
-        return;
+      let resourceToSync = draftResource;
+
+      if (!isCloudOnly) {
+        try {
+          const res = await fetch('/api/admin/hub', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-admin-token': authToken,
+            },
+            body: JSON.stringify({
+              title: hubTitle,
+              topicArea: hubTopic,
+              summary: hubSummary,
+              content: hubContent,
+              languageNote: hubLang,
+              keyFormulas: draftResource.keyFormulas,
+              pdfUrl: hubPdfUrl,
+              pdfName: hubPdfName,
+              published: hubPublished,
+            }),
+          });
+          const body = (await res.json()) as { resource?: LearningResource; error?: string };
+          if (!res.ok) {
+            setErrorMessage(body.error || 'Unable to save Learning Hub guide.');
+            return;
+          }
+          if (body.resource) resourceToSync = body.resource;
+        } catch {
+          // Proceed to cloud save
+        }
       }
-      if (cloudUser && body.resource) {
-        await saveLearningResourceToCloud(body.resource);
+
+      if (cloudUser || isCloudOnly) {
+        await saveLearningResourceToCloud(resourceToSync);
       }
       resetHubForm();
       await fetchAdminData(authToken);
       await onSiteUpdated();
-      setStatusMessage('Study guide / PDF published to Learning Hub.');
+      setStatusMessage(
+        cloudUser || isCloudOnly
+          ? 'Study guide / PDF published LIVE everywhere!'
+          : 'Study guide saved locally. Connect Cloud Sync above to publish everywhere.',
+      );
     } finally {
       setSaving(false);
     }
@@ -819,43 +1204,79 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
 
   async function saveInlineHubEdit(id: string) {
     if (!authToken) return;
+    const isCloudOnly = authToken === 'cloud-session';
+    if (isCloudOnly && !(await ensureCloudWriterReady())) return;
+
+    const nextResource: LearningResource = {
+      id,
+      title: inlineHubTitle.trim(),
+      topicArea: inlineHubTopic.trim(),
+      summary: inlineHubSummary.trim(),
+      content: inlineHubContent.trim(),
+      languageNote: inlineHubLang.trim() || 'Hindi + English Bilingual',
+      keyFormulas: inlineHubFormulasText
+        .split('\n')
+        .map((f) => f.trim())
+        .filter(Boolean),
+      pdfUrl: inlineHubPdfUrl.trim() || undefined,
+      pdfName: inlineHubPdfName.trim() || undefined,
+      published: inlineHubPublished,
+      updatedAt: new Date().toISOString(),
+    };
+    const validation = validateLearningResourceInput(nextResource);
+    if (!validation.valid) {
+      setErrorMessage(validation.error || 'Please fill all required Learning Hub fields.');
+      return;
+    }
+
     setSaving(true);
     setStatusMessage(null);
     setErrorMessage(null);
     try {
-      const res = await fetch(`/api/admin/hub/${id}`, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-admin-token': authToken,
-        },
-        body: JSON.stringify({
-          title: inlineHubTitle,
-          topicArea: inlineHubTopic,
-          summary: inlineHubSummary,
-          content: inlineHubContent,
-          languageNote: inlineHubLang,
-          keyFormulas: inlineHubFormulasText
-            .split('\n')
-            .map((f) => f.trim())
-            .filter(Boolean),
-          pdfUrl: inlineHubPdfUrl,
-          pdfName: inlineHubPdfName,
-          published: inlineHubPublished,
-        }),
-      });
-      const body = (await res.json()) as { resource?: LearningResource; error?: string };
-      if (!res.ok) {
-        setErrorMessage(body.error || 'Unable to update study guide.');
-        return;
+      let resourceToSync = nextResource;
+
+      if (!isCloudOnly) {
+        try {
+          const res = await fetch(`/api/admin/hub/${id}`, {
+            method: 'PUT',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-admin-token': authToken,
+            },
+            body: JSON.stringify({
+              title: inlineHubTitle,
+              topicArea: inlineHubTopic,
+              summary: inlineHubSummary,
+              content: inlineHubContent,
+              languageNote: inlineHubLang,
+              keyFormulas: nextResource.keyFormulas,
+              pdfUrl: inlineHubPdfUrl,
+              pdfName: inlineHubPdfName,
+              published: inlineHubPublished,
+            }),
+          });
+          const body = (await res.json()) as { resource?: LearningResource; error?: string };
+          if (!res.ok) {
+            setErrorMessage(body.error || 'Unable to update study guide.');
+            return;
+          }
+          if (body.resource) resourceToSync = body.resource;
+        } catch {
+          // Proceed to cloud save
+        }
       }
-      if (cloudUser && body.resource) {
-        await saveLearningResourceToCloud(body.resource);
+
+      if (cloudUser || isCloudOnly) {
+        await saveLearningResourceToCloud(resourceToSync);
       }
       setInlineHubId(null);
       await fetchAdminData(authToken);
       await onSiteUpdated();
-      setStatusMessage(`Updated "${inlineHubTitle}".`);
+      setStatusMessage(
+        cloudUser || isCloudOnly
+          ? `Updated "${inlineHubTitle}" — live everywhere!`
+          : `Updated "${inlineHubTitle}" locally.`,
+      );
     } finally {
       setSaving(false);
     }
@@ -863,19 +1284,36 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
 
   async function toggleHubPublish(resItem: LearningResource) {
     if (!authToken) return;
-    const res = await fetch(`/api/admin/hub/${resItem.id}`, {
-      method: 'PUT',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-admin-token': authToken,
-      },
-      body: JSON.stringify({ published: !resItem.published }),
-    });
-    if (res.ok && cloudUser) {
-      const body = (await res.json()) as { resource?: LearningResource };
-      if (body.resource) {
-        await saveLearningResourceToCloud(body.resource);
+    const isCloudOnly = authToken === 'cloud-session';
+    if (isCloudOnly && !(await ensureCloudWriterReady())) return;
+
+    let resourceToSync: LearningResource = {
+      ...resItem,
+      published: !resItem.published,
+      updatedAt: new Date().toISOString(),
+    };
+
+    if (!isCloudOnly) {
+      try {
+        const res = await fetch(`/api/admin/hub/${resItem.id}`, {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-admin-token': authToken,
+          },
+          body: JSON.stringify({ published: !resItem.published }),
+        });
+        if (res.ok) {
+          const body = (await res.json()) as { resource?: LearningResource };
+          if (body.resource) resourceToSync = body.resource;
+        }
+      } catch {
+        // Proceed to cloud update
       }
+    }
+
+    if (cloudUser || isCloudOnly) {
+      await saveLearningResourceToCloud(resourceToSync);
     }
     await fetchAdminData(authToken);
     await onSiteUpdated();
@@ -883,11 +1321,20 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
 
   async function deleteHubResource(id: string) {
     if (!authToken) return;
-    await fetch(`/api/admin/hub/${id}`, {
-      method: 'DELETE',
-      headers: { 'x-admin-token': authToken },
-    });
-    if (cloudUser) {
+    const isCloudOnly = authToken === 'cloud-session';
+    if (isCloudOnly && !(await ensureCloudWriterReady())) return;
+
+    if (!isCloudOnly) {
+      try {
+        await fetch(`/api/admin/hub/${id}`, {
+          method: 'DELETE',
+          headers: { 'x-admin-token': authToken },
+        });
+      } catch {
+        // Proceed to cloud delete
+      }
+    }
+    if (cloudUser || isCloudOnly) {
       await deleteLearningResourceFromCloud(id);
     }
     if (inlineHubId === id) {
@@ -899,7 +1346,7 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
   }
 
   async function deleteEnquiry(id: string) {
-    if (!authToken) return;
+    if (!authToken || authToken === 'cloud-session') return;
     await fetch(`/api/admin/enquiries/${id}`, {
       method: 'DELETE',
       headers: { 'x-admin-token': authToken },
@@ -936,10 +1383,12 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                   setAuthToken(null);
                   setAdminData(null);
                   setPasscode('');
-                  void fetch('/api/admin/logout', {
-                    method: 'POST',
-                    headers: { 'x-admin-token': tokenToRevoke },
-                  });
+                  if (tokenToRevoke !== 'cloud-session') {
+                    void fetch('/api/admin/logout', {
+                      method: 'POST',
+                      headers: { 'x-admin-token': tokenToRevoke },
+                    });
+                  }
                 }}
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-700 border border-slate-300 hover:bg-slate-100 rounded-lg cursor-pointer"
               >

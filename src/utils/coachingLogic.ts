@@ -457,3 +457,43 @@ export function formatFriendlyAiError(rawMessage: string): string {
   return 'Advice Mission AI could not complete this answer right now. Please click Retry or rephrase your question.';
 }
 
+export const ADMIN_PASSCODE_SALT = 'amp-admin-rauli-v1';
+export const ADMIN_PASSCODE_HASH =
+  'a2d2db0c8d0a87d5a8b01020a07625d85d36929649ecae289197430b85a41013';
+
+export async function verifyAdminPasscodeHash(input: string): Promise<boolean> {
+  if (!input || !globalThis.crypto?.subtle) {
+    return false;
+  }
+  const encoded = new TextEncoder().encode(`${ADMIN_PASSCODE_SALT}:${input}`);
+  const digestBuffer = await globalThis.crypto.subtle.digest('SHA-256', encoded);
+  const digestHex = Array.from(new Uint8Array(digestBuffer))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+
+  if (digestHex.length !== ADMIN_PASSCODE_HASH.length) {
+    return false;
+  }
+  let mismatch = 0;
+  for (let i = 0; i < digestHex.length; i += 1) {
+    mismatch |= digestHex.charCodeAt(i) ^ ADMIN_PASSCODE_HASH.charCodeAt(i);
+  }
+  return mismatch === 0;
+}
+
+export function applyRealtimeCloudUpdate(
+  base: SiteData,
+  cloud: Partial<SiteData>,
+): SiteData {
+  return {
+    coaching: cloud.coaching ? { ...base.coaching, ...cloud.coaching } : base.coaching,
+    socialLinks: cloud.socialLinks
+      ? { ...base.socialLinks, ...cloud.socialLinks }
+      : base.socialLinks,
+    teacher: cloud.teacher ? { ...base.teacher, ...cloud.teacher } : base.teacher,
+    gallery: cloud.gallery !== undefined ? cloud.gallery : base.gallery,
+    learningHub: cloud.learningHub !== undefined ? cloud.learningHub : base.learningHub,
+    enquiries: base.enquiries,
+  };
+}
+

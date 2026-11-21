@@ -15,6 +15,8 @@ import type {
   TeacherProfile,
 } from './src/types/coaching.ts';
 import {
+  ADMIN_PASSCODE_HASH,
+  ADMIN_PASSCODE_SALT,
   formatFriendlyAiError,
   isPdfFileOrUrl,
   isVideoFileOrUrl,
@@ -32,9 +34,6 @@ import {
 import { DEFAULT_SITE_DATA } from './src/utils/seedData.ts';
 
 const PORT = Number(process.env.PORT || 3000);
-const ADMIN_PASSCODE_SALT = 'amp-admin-rauli-v1';
-const ADMIN_PASSCODE_HASH =
-  '9cbcf9318cdddf9d011fb3d454a832ad87f41f64db8f512e70a720f4711859f8';
 const adminSessions = new Set<string>();
 
 function verifyAdminPasscode(input: string): boolean {
@@ -190,27 +189,59 @@ async function startServer() {
     res.status(201).json({ ok: true, enquiry });
   });
 
-  // Advice Mission AI (Gemini API server-side endpoint)
-  app.post('/api/ai/ask', async (req: Request, res: Response) => {
+  function buildAiPromptContext(
+    messages: Array<{ role?: string; text?: string }> | undefined,
+    languagePreference?: 'bilingual' | 'english' | 'hindi',
+  ) {
+    if (!Array.isArray(messages) || messages.length === 0) {
+      return { error: 'Please enter a question or doubt first.' };
+    }
+    const latest = messages[messages.length - 1];
+    if (!latest?.text?.trim()) {
+      return { error: 'Question cannot be empty.' };
+    }
+    const normalizedTurns = normalizeAiConversationHistory(messages);
+    if (normalizedTurns.length === 0) {
+      return { error: 'Please enter a valid question or doubt first.' };
+    }
+
+    const langDirective =
+      languagePreference === 'hindi'
+        ? 'Respond primarily in simple, clear Hindi (Devanagari) with important technical terms in English brackets.'
+        : languagePreference === 'english'
+          ? 'Respond in simple, clear student-friendly English, adding brief Hindi meaning for difficult terms when helpful.'
+          : 'Respond in clear, simple bilingual Hindi and English (easy-to-read English paired with simple Hindi explanation, or Hinglish/Devanagari where natural) so school students from Class 1 to 12 understand effortlessly.';
+
+    const systemInstruction = `You are "Advice Mission AI", the fast educational doubt-solving assistant of "Advice Mission Point" coaching institute in Ramauli, Darbhanga, Bihar, India 847101 (Tagline: "To Struggle, Take Success.").
+Your subtitle is: "Your Coaching, Your AI, Your Success."
+
+Rules:
+- Never ask the student to select a class or subject before answering. Answer any academic doubt directly and warmly.
+- ${langDirective}
+- Keep answers fast, crisp, and focused (around 80-160 words unless solving a multi-step numerical) using plain Unicode math symbols (×, ÷, ², √) instead of LaTeX $ dollar signs:
+  1. **Short Answer (संक्षिप्त उत्तर):** 1–2 crisp sentences giving the direct answer.
+  2. **Simple Explanation (सरल व्याख्या):** Clear step-by-step concept explanation using everyday examples.
+  3. **Key Takeaway / Formula (मुख्य बिंदु):** A quick memory tip, formula, or practice hint when relevant.
+- Keep explanations accurate and encouraging for Indian school students (Class 1 to Class 12).`;
+
+    return { normalizedTurns, systemInstruction };
+  }
+
+  const FAST_AI_MODELS: Array<{ model: string; level: ThinkingLevel }> = [
+    { model: 'gemini-3.1-flash-lite', level: ThinkingLevel.MINIMAL },
+    { model: 'gemini-4-hydrogen', level: ThinkingLevel.LOW },
+  ];
+
+  // Advice Mission AI Streaming SSE endpoint (ultra-fast first-token response)
+  app.post('/api/ai/stream', async (req: Request, res: Response) => {
     const { messages, languagePreference } = req.body as {
       messages?: Array<{ role: 'user' | 'assistant'; text: string }>;
       languagePreference?: 'bilingual' | 'english' | 'hindi';
     };
 
-    if (!Array.isArray(messages) || messages.length === 0) {
-      res.status(400).json({ error: 'Please enter a question or doubt first.' });
-      return;
-    }
-
-    const latest = messages[messages.length - 1];
-    if (!latest?.text?.trim()) {
-      res.status(400).json({ error: 'Question cannot be empty.' });
-      return;
-    }
-
-    const normalizedTurns = normalizeAiConversationHistory(messages);
-    if (normalizedTurns.length === 0) {
-      res.status(400).json({ error: 'Please enter a valid question or doubt first.' });
+    const ctx = buildAiPromptContext(messages, languagePreference);
+    if ('error' in ctx) {
+      res.status(400).json({ error: ctx.error });
       return;
     }
 
@@ -223,46 +254,117 @@ async function startServer() {
       return;
     }
 
-    const langDirective =
-      languagePreference === 'hindi'
-        ? 'Respond primarily in simple, clear Hindi (Devanagari) with important technical terms in English brackets.'
-        : languagePreference === 'english'
-          ? 'Respond in simple, clear student-friendly English, adding brief Hindi meaning for difficult terms when helpful.'
-          : 'Respond in clear, simple bilingual Hindi and English (easy-to-read English paired with simple Hindi explanation, or Hinglish/Devanagari where natural) so school students from Class 1 to 12 understand effortlessly.';
+    res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.flushHeaders?.();
 
-    const systemInstruction = `You are "Advice Mission AI", the official educational doubt-solving assistant of "Advice Mission Point" coaching institute in Ramauli, Darbhanga, Bihar, India 847101 (Tagline: "To Struggle, Take Success.").
-Your subtitle is: "Your Coaching, Your AI, Your Success."
-
-Rules:
-- Never ask the student to select a class or subject before answering. Answer any academic doubt directly and warmly.
-- ${langDirective}
-- Structure your response cleanly using plain Unicode math symbols (×, ÷, ², √) instead of LaTeX $ dollar signs:
-  1. **Short Answer (संक्षिप्त उत्तर):** 1–2 crisp sentences giving the direct answer.
-  2. **Simple Explanation (सरल व्याख्या):** Clear step-by-step concept explanation using everyday examples.
-  3. **Key Takeaway / Formula (मुख्य बिंदु):** A quick memory tip, formula, or practice hint when relevant.
-- Keep explanations concise, encouraging, accurate, and tailored for Indian school students (Class 1 to Class 12).`;
-
-    const modelAttempts: Array<{ model: string; level: ThinkingLevel }> = [
-      { model: 'gemini-4-hydrogen', level: ThinkingLevel.LOW },
-      { model: 'gemini-3.1-flash-lite', level: ThinkingLevel.MINIMAL },
-      { model: 'gemini-3.1-flash-lite', level: ThinkingLevel.LOW },
-    ];
+    const sendEvent = (payload: Record<string, unknown>) => {
+      if (!res.writableEnded) {
+        res.write(`data: ${JSON.stringify(payload)}\n\n`);
+      }
+    };
 
     let lastErrorMessage = '';
-    for (let i = 0; i < modelAttempts.length; i += 1) {
-      const attempt = modelAttempts[i];
+    for (let i = 0; i < FAST_AI_MODELS.length; i += 1) {
+      const attempt = FAST_AI_MODELS[i];
+      let emittedAny = false;
       try {
-        const response = await Promise.race([
-          ai.models.generateContent({
+        const stream = await Promise.race([
+          ai.models.generateContentStream({
             model: attempt.model,
-            contents: normalizedTurns,
+            contents: ctx.normalizedTurns,
             config: {
-              systemInstruction,
+              systemInstruction: ctx.systemInstruction,
               thinkingConfig: { thinkingLevel: attempt.level },
             },
           }),
           new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error('Request timeout while waiting for AI model')), 12000),
+            setTimeout(() => reject(new Error('Request timeout while waiting for AI model')), 9000),
+          ),
+        ]);
+
+        for await (const chunk of stream) {
+          const delta = chunk.text;
+          if (delta) {
+            emittedAny = true;
+            sendEvent({ delta });
+          }
+        }
+
+        if (emittedAny) {
+          sendEvent({ done: true });
+          res.end();
+          return;
+        }
+        lastErrorMessage = 'Empty model response.';
+      } catch (err) {
+        lastErrorMessage =
+          err instanceof Error ? err.message : 'Unable to reach Gemini API right now.';
+        if (emittedAny) {
+          sendEvent({ done: true });
+          res.end();
+          return;
+        }
+        const lower = lastErrorMessage.toLowerCase();
+        const isTransient =
+          lower.includes('503') ||
+          lower.includes('500') ||
+          lower.includes('429') ||
+          lower.includes('unavailable') ||
+          lower.includes('high demand') ||
+          lower.includes('resource_exhausted') ||
+          lower.includes('fetch') ||
+          lower.includes('timeout');
+        if (!isTransient) {
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+    }
+
+    sendEvent({ error: formatFriendlyAiError(lastErrorMessage) });
+    res.end();
+  });
+
+  // Advice Mission AI JSON endpoint (fast-first non-streaming fallback)
+  app.post('/api/ai/ask', async (req: Request, res: Response) => {
+    const { messages, languagePreference } = req.body as {
+      messages?: Array<{ role: 'user' | 'assistant'; text: string }>;
+      languagePreference?: 'bilingual' | 'english' | 'hindi';
+    };
+
+    const ctx = buildAiPromptContext(messages, languagePreference);
+    if ('error' in ctx) {
+      res.status(400).json({ error: ctx.error });
+      return;
+    }
+
+    const ai = getGeminiClient();
+    if (!ai) {
+      res.status(503).json({
+        error:
+          'Advice Mission AI is ready once GEMINI_API_KEY is configured in Settings > Secrets.',
+      });
+      return;
+    }
+
+    let lastErrorMessage = '';
+    for (let i = 0; i < FAST_AI_MODELS.length; i += 1) {
+      const attempt = FAST_AI_MODELS[i];
+      try {
+        const response = await Promise.race([
+          ai.models.generateContent({
+            model: attempt.model,
+            contents: ctx.normalizedTurns,
+            config: {
+              systemInstruction: ctx.systemInstruction,
+              thinkingConfig: { thinkingLevel: attempt.level },
+            },
+          }),
+          new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error('Request timeout while waiting for AI model')), 9000),
           ),
         ]);
 
@@ -276,7 +378,6 @@ Rules:
         lastErrorMessage =
           err instanceof Error ? err.message : 'Unable to reach Gemini API right now.';
         const lower = lastErrorMessage.toLowerCase();
-        // Only retry / fail over on transient capacity, network, or rate-limit errors
         const isTransient =
           lower.includes('503') ||
           lower.includes('500') ||
@@ -289,7 +390,7 @@ Rules:
         if (!isTransient) {
           break;
         }
-        await new Promise((resolve) => setTimeout(resolve, 300 * (i + 1)));
+        await new Promise((resolve) => setTimeout(resolve, 100));
       }
     }
 

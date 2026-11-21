@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  applyRealtimeCloudUpdate,
   detectUploadCategoryAndType,
   filterAdminGalleryItems,
   filterAdminLearningResources,
@@ -21,6 +22,7 @@ import {
   validateGalleryInput,
   validateLearningResourceInput,
   validateTeacherProfile,
+  verifyAdminPasscodeHash,
 } from './coachingLogic';
 import { DEFAULT_SITE_DATA } from './seedData';
 
@@ -268,5 +270,23 @@ test('formatFriendlyAiError hides raw JSON and explains transient 503 cleanly', 
   const msg = formatFriendlyAiError('{"error":{"code":503,"status":"UNAVAILABLE"}}');
   assert.equal(msg.includes('{'), false);
   assert.ok(msg.toLowerCase().includes('retry'));
+});
+
+test('verifyAdminPasscodeHash rejects empty and old/invalid passcodes', async () => {
+  assert.equal(await verifyAdminPasscodeHash(''), false);
+  assert.equal(await verifyAdminPasscodeHash('wrong-passcode'), false);
+  assert.equal(await verifyAdminPasscodeHash('@surendra sir 9939'), false);
+});
+
+test('applyRealtimeCloudUpdate updates live fields and preserves unchanged sections', () => {
+  const updated = applyRealtimeCloudUpdate(DEFAULT_SITE_DATA, {
+    teacher: { ...DEFAULT_SITE_DATA.teacher, name: 'Hariom Sir' },
+    gallery: [DEFAULT_SITE_DATA.gallery[0]],
+  });
+
+  assert.equal(updated.teacher.name, 'Hariom Sir');
+  assert.equal(updated.coaching.name, DEFAULT_SITE_DATA.coaching.name);
+  assert.equal(updated.gallery.length, 1);
+  assert.equal(updated.learningHub.length, DEFAULT_SITE_DATA.learningHub.length);
 });
 

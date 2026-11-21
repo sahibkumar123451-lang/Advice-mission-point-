@@ -15,6 +15,7 @@ import {
   getDocFromServer,
   getDocs,
   getFirestore,
+  onSnapshot,
   query,
   serverTimestamp,
   setDoc,
@@ -257,8 +258,177 @@ export async function loadPublicSiteFromFirestore(): Promise<Partial<SiteData>> 
   return result;
 }
 
+export function subscribeToPublicSiteFromFirestore(
+  onCloudChange: (partial: Partial<SiteData>) => void,
+  onError?: (err: Error) => void,
+): () => void {
+  const currentCloud: Partial<SiteData> = {};
+  let hasSeenCloudGallery = false;
+  let hasSeenCloudHub = false;
+
+  const emitIfPopulated = () => {
+    if (
+      currentCloud.coaching ||
+      currentCloud.socialLinks ||
+      currentCloud.teacher ||
+      currentCloud.gallery !== undefined ||
+      currentCloud.learningHub !== undefined
+    ) {
+      onCloudChange({ ...currentCloud });
+    }
+  };
+
+  const reportError = (err: unknown, op: OperationType, path: string) => {
+    try {
+      handleFirestoreError(err, op, path);
+    } catch (wrapped) {
+      if (onError && wrapped instanceof Error) {
+        onError(wrapped);
+      }
+    }
+  };
+
+  const unsubCoaching = onSnapshot(
+    doc(db, 'coachingConfig', 'main'),
+    (snap) => {
+      if (snap.exists()) {
+        const data = snap.data();
+        currentCloud.coaching = {
+          name: String(data.name || ''),
+          tagline: String(data.tagline || ''),
+          welcomeHeadline: String(data.welcomeHeadline || ''),
+          welcomeSubtitle: String(data.welcomeSubtitle || ''),
+          aboutHeading: String(data.aboutHeading || ''),
+          aboutDescription: String(data.aboutDescription || ''),
+          classesRangeText: String(data.classesRangeText || ''),
+          address: String(data.address || ''),
+          googleMapsUrl: String(data.googleMapsUrl || ''),
+          phone: String(data.phone || ''),
+          email: String(data.email || ''),
+          officeHours: String(data.officeHours || ''),
+          heroMediaUrl: typeof data.heroMediaUrl === 'string' ? data.heroMediaUrl : '',
+          heroMediaType: data.heroMediaType === 'video' ? 'video' : 'image',
+        };
+        emitIfPopulated();
+      }
+    },
+    (error) => reportError(error, OperationType.GET, 'coachingConfig/main'),
+  );
+
+  const unsubSocial = onSnapshot(
+    doc(db, 'socialLinksConfig', 'main'),
+    (snap) => {
+      if (snap.exists()) {
+        const data = snap.data();
+        currentCloud.socialLinks = {
+          whatsapp: String(data.whatsapp || ''),
+          instagram: String(data.instagram || ''),
+          facebook: String(data.facebook || ''),
+          youtube: String(data.youtube || ''),
+        };
+        emitIfPopulated();
+      }
+    },
+    (error) => reportError(error, OperationType.GET, 'socialLinksConfig/main'),
+  );
+
+  const unsubTeacher = onSnapshot(
+    doc(db, 'teacherConfig', 'main'),
+    (snap) => {
+      if (snap.exists()) {
+        const data = snap.data();
+        currentCloud.teacher = {
+          name: String(data.name || ''),
+          roleTitle: String(data.roleTitle || ''),
+          photoUrl: String(data.photoUrl || ''),
+          introduction: String(data.introduction || ''),
+          qualifications: String(data.qualifications || ''),
+          experience: String(data.experience || ''),
+          skills: Array.isArray(data.skills) ? data.skills.map(String) : [],
+          classesTaught: String(data.classesTaught || ''),
+          subjectsTaught: Array.isArray(data.subjectsTaught)
+            ? data.subjectsTaught.map(String)
+            : [],
+        };
+        emitIfPopulated();
+      }
+    },
+    (error) => reportError(error, OperationType.GET, 'teacherConfig/main'),
+  );
+
+  const unsubGallery = onSnapshot(
+    query(collection(db, 'galleryItems'), where('published', '==', true)),
+    (snap) => {
+      if (!snap.empty || hasSeenCloudGallery) {
+        hasSeenCloudGallery = true;
+        currentCloud.gallery = snap.docs
+          .map((d) => {
+            const data = d.data();
+            return {
+              id: String(data.id || d.id),
+              title: String(data.title || ''),
+              caption: String(data.caption || ''),
+              category: data.category as GalleryItem['category'],
+              mediaType: data.mediaType as GalleryItem['mediaType'],
+              mediaUrl: String(data.mediaUrl || ''),
+              thumbnailUrl:
+                typeof data.thumbnailUrl === 'string' ? data.thumbnailUrl : undefined,
+              published: Boolean(data.published),
+              createdAt: toIsoString(data.createdAt),
+            };
+          })
+          .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+        emitIfPopulated();
+      }
+    },
+    (error) => reportError(error, OperationType.LIST, 'galleryItems'),
+  );
+
+  const unsubHub = onSnapshot(
+    query(collection(db, 'learningHubItems'), where('published', '==', true)),
+    (snap) => {
+      if (!snap.empty || hasSeenCloudHub) {
+        hasSeenCloudHub = true;
+        currentCloud.learningHub = snap.docs
+          .map((d) => {
+            const data = d.data();
+            return {
+              id: String(data.id || d.id),
+              title: String(data.title || ''),
+              topicArea: String(data.topicArea || ''),
+              summary: String(data.summary || ''),
+              content: String(data.content || ''),
+              languageNote: String(data.languageNote || 'Hindi + English Bilingual'),
+              keyFormulas: Array.isArray(data.keyFormulas)
+                ? data.keyFormulas.map(String)
+                : [],
+              pdfUrl: typeof data.pdfUrl === 'string' ? data.pdfUrl : undefined,
+              pdfName: typeof data.pdfName === 'string' ? data.pdfName : undefined,
+              published: Boolean(data.published),
+              updatedAt: toIsoString(data.updatedAt),
+            };
+          })
+          .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+        emitIfPopulated();
+      }
+    },
+    (error) => reportError(error, OperationType.LIST, 'learningHubItems'),
+  );
+
+  return () => {
+    unsubCoaching();
+    unsubSocial();
+    unsubTeacher();
+    unsubGallery();
+    unsubHub();
+  };
+}
+
 export async function loadAllAdminSiteDataFromFirestore(): Promise<Partial<SiteData>> {
   const result = await loadPublicSiteFromFirestore();
+  if (!auth.currentUser) {
+    return result;
+  }
   try {
     const galSnap = await getDocs(collection(db, 'galleryItems'));
     if (!galSnap.empty) {

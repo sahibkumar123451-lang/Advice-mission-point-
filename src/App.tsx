@@ -10,8 +10,14 @@ import { LearningHubSection } from './components/LearningHubSection';
 import { Navbar } from './components/Navbar';
 import { TeacherProfileSection } from './components/TeacherProfileSection';
 import type { SiteData } from './types/coaching';
-import { mergeSiteDataPreserveExisting } from './utils/coachingLogic';
-import { loadPublicSiteFromFirestore } from './utils/firebaseClient';
+import {
+  applyRealtimeCloudUpdate,
+  mergeSiteDataPreserveExisting,
+} from './utils/coachingLogic';
+import {
+  loadPublicSiteFromFirestore,
+  subscribeToPublicSiteFromFirestore,
+} from './utils/firebaseClient';
 import { DEFAULT_SITE_DATA } from './utils/seedData';
 
 export default function App() {
@@ -77,6 +83,10 @@ export default function App() {
 
   useEffect(() => {
     void loadSiteData();
+    const unsubscribe = subscribeToPublicSiteFromFirestore((cloudData) => {
+      setSiteData((prev) => applyRealtimeCloudUpdate(prev, cloudData));
+    });
+    return () => unsubscribe();
   }, [loadSiteData]);
 
   const jumpToAI = useCallback((prefillPrompt?: string) => {

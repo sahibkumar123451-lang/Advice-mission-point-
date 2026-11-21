@@ -100,7 +100,7 @@ export function AdviceMissionAI({
     setLoading(true);
 
     try {
-      const response = await fetch('/api/ai/ask', {
+      const response = await fetch('/api/ai/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -109,15 +109,15 @@ export function AdviceMissionAI({
         }),
       });
 
-      const rawText = await response.text();
-      let data: { answer?: string; error?: string } = {};
-      try {
-        data = JSON.parse(rawText) as { answer?: string; error?: string };
-      } catch {
-        data = {};
-      }
-
-      if (!response.ok || !data.answer) {
+      const contentType = response.headers.get('content-type') || '';
+      if (!response.ok || !response.body || contentType.includes('application/json')) {
+        const rawText = await response.text();
+        let data: { answer?: string; error?: string } = {};
+        try {
+          data = JSON.parse(rawText) as { answer?: string; error?: string };
+        } catch {
+          data = {};
+        }
         setMessages(prevMessages);
         setInput(trimmed);
         setLastFailedQuestion(trimmed);
@@ -128,13 +128,77 @@ export function AdviceMissionAI({
         return;
       }
 
-      const aiMsg: ChatMessage = {
-        id: `a-${Date.now()}`,
-        role: 'assistant',
-        text: data.answer,
-        createdAt: new Date().toISOString(),
+      const aiMsgId = `a-${Date.now()}`;
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let accumulatedText = '';
+      let streamError: string | null = null;
+      let addedAssistantBubble = false;
+
+      const appendDelta = (delta: string) => {
+        accumulatedText += delta;
+        if (!addedAssistantBubble) {
+          addedAssistantBubble = true;
+          const initialMsg: ChatMessage = {
+            id: aiMsgId,
+            role: 'assistant',
+            text: accumulatedText,
+            createdAt: new Date().toISOString(),
+          };
+          setMessages([...nextMessages, initialMsg]);
+        } else {
+          setMessages((prev) =>
+            prev.map((m) => (m.id === aiMsgId ? { ...m, text: accumulatedText } : m)),
+          );
+        }
       };
-      setMessages((prev) => [...prev, aiMsg]);
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+
+        for (const rawLine of lines) {
+          const line = rawLine.trim();
+          if (!line.startsWith('data:')) continue;
+          const jsonStr = line.slice(5).trim();
+          if (!jsonStr) continue;
+          try {
+            const evt = JSON.parse(jsonStr) as {
+              delta?: string;
+              done?: boolean;
+              error?: string;
+            };
+            if (evt.delta) {
+              appendDelta(evt.delta);
+            }
+            if (evt.error) {
+              streamError = evt.error;
+            }
+          } catch {
+            // Ignore malformed SSE fragment
+          }
+        }
+      }
+
+      if (streamError && !accumulatedText.trim()) {
+        setMessages(prevMessages);
+        setInput(trimmed);
+        setLastFailedQuestion(trimmed);
+        setError(streamError);
+        return;
+      }
+
+      if (!accumulatedText.trim()) {
+        setMessages(prevMessages);
+        setInput(trimmed);
+        setLastFailedQuestion(trimmed);
+        setError('Advice Mission AI could not complete this answer. Please click Retry.');
+      }
     } catch {
       setMessages(prevMessages);
       setInput(trimmed);
@@ -283,10 +347,10 @@ export function AdviceMissionAI({
               ))
             )}
 
-            {loading && (
+            {loading && messages[messages.length - 1]?.role !== 'assistant' && (
               <div className="flex justify-start">
                 <div className="rounded-2xl px-4 py-3 bg-white border border-slate-200 text-sm text-slate-600">
-                  Preparing your simple explanation...
+                  Preparing your fast answer...
                 </div>
               </div>
             )}
