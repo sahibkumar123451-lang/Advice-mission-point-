@@ -166,16 +166,28 @@ export function AdviceMissionAI({
       );
 
       const contentType = response.headers.get('content-type') || '';
-      if (!response.ok || !response.body || contentType.includes('application/json')) {
+      if (
+        !response.ok ||
+        !response.body ||
+        contentType.includes('application/json') ||
+        contentType.includes('text/html')
+      ) {
         const rawText = await response.text();
         let data: { answer?: string; error?: string } = {};
-        try {
-          data = JSON.parse(rawText) as { answer?: string; error?: string };
-        } catch {
-          data = {};
+        if (!contentType.includes('text/html')) {
+          try {
+            data = JSON.parse(rawText) as { answer?: string; error?: string };
+          } catch {
+            data = {};
+          }
         }
         setLastFailedQuestion(trimmed);
-        setError(data.error || formatFriendlyAiError(`HTTP ${response.status}`));
+        setError(
+          data.error ||
+            formatFriendlyAiError(
+              contentType.includes('text/html') ? '404' : `HTTP ${response.status}`,
+            ),
+        );
         return;
       }
 
