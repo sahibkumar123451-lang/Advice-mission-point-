@@ -5,13 +5,11 @@ import { filterLearningResources, formatDisplayDate } from '../utils/coachingLog
 
 interface LearningHubSectionProps {
   resources: LearningResource[];
-  onAskAIAboutTopic: (prompt: string) => void;
   onManageHubClick?: () => void;
 }
 
 export function LearningHubSection({
   resources,
-  onAskAIAboutTopic,
   onManageHubClick,
 }: LearningHubSectionProps) {
   const [searchQuery, setSearchQuery] = useState('');
@@ -107,7 +105,7 @@ export function LearningHubSection({
               No study guides match your search.
             </p>
             <p className="mt-1 text-sm text-slate-600">
-              Clear the search filter or ask Advice Mission AI directly for help on this topic.
+              Clear the search filter or contact the coaching centre directly for help on this topic.
             </p>
           </div>
         ) : (
@@ -177,17 +175,12 @@ export function LearningHubSection({
                     <ArrowUpRight className="w-4 h-4" aria-hidden="true" />
                   </button>
 
-                  <button
-                    type="button"
-                    onClick={() =>
-                      onAskAIAboutTopic(
-                        `Please explain "${item.title}" in simple Hindi and English with an easy example.`,
-                      )
-                    }
-                    className="text-xs font-semibold text-amber-800 hover:underline underline-offset-4 cursor-pointer"
+                  <a
+                    href="#contact"
+                    className="text-xs font-semibold text-amber-800 hover:underline underline-offset-4"
                   >
-                    Ask AI on This Topic
-                  </button>
+                    Ask Teacher
+                  </a>
                 </div>
               </article>
             ))}
@@ -294,21 +287,8 @@ export function LearningHubSection({
             <div className="mt-6 flex flex-wrap items-center justify-end gap-3">
               <button
                 type="button"
-                onClick={() => {
-                  const title = activeResource.title;
-                  setActiveResource(null);
-                  onAskAIAboutTopic(
-                    `Explain "${title}" with a practice question in simple Hindi and English.`,
-                  );
-                }}
-                className="px-4 py-2 text-sm font-semibold text-white bg-slate-900 hover:bg-slate-800 rounded-lg cursor-pointer"
-              >
-                Ask Advice Mission AI
-              </button>
-              <button
-                type="button"
                 onClick={() => setActiveResource(null)}
-                className="px-4 py-2 text-sm font-semibold text-slate-700 border border-slate-300 hover:bg-slate-50 rounded-lg cursor-pointer"
+                className="px-4 py-2 text-sm font-semibold text-white bg-slate-900 hover:bg-slate-800 rounded-lg cursor-pointer"
               >
                 Close
               </button>

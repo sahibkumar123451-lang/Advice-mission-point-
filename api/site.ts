@@ -1,8 +1,9 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { sendJson, setCorsHeaders } from './_lib/geminiAi';
 
 export default function handler(req: IncomingMessage, res: ServerResponse) {
-  setCorsHeaders(res);
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
   if (req.method === 'OPTIONS') {
     res.statusCode = 204;
@@ -10,7 +11,7 @@ export default function handler(req: IncomingMessage, res: ServerResponse) {
     return;
   }
 
-  // On Vercel static+serverless deployments, live public content is synced via Firebase Firestore;
-  // returning an empty non-error payload prevents a 404 console error before Firestore loads.
-  sendJson(res, 200, { ok: true, source: 'serverless' });
+  res.statusCode = 200;
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  res.end(JSON.stringify({ ok: true, source: 'serverless' }));
 }

@@ -3,13 +3,13 @@ import { Menu, X } from 'lucide-react';
 
 interface NavbarProps {
   coachingName: string;
-  onAskDoubtClick: () => void;
+  onContactClick: () => void;
   onOpenAdminClick: () => void;
 }
 
 export function Navbar({
   coachingName,
-  onAskDoubtClick,
+  onContactClick,
   onOpenAdminClick,
 }: NavbarProps) {
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -74,10 +74,10 @@ export function Navbar({
         <div className="flex items-center gap-3 shrink-0">
           <button
             type="button"
-            onClick={onAskDoubtClick}
+            onClick={onContactClick}
             className="hidden sm:inline-flex items-center justify-center px-4 py-2 text-sm font-semibold text-white bg-slate-900 hover:bg-slate-800 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-600 focus-visible:ring-offset-2"
           >
-            Ask Doubt
+            Enquire Now
           </button>
 
           <button
@@ -120,11 +120,11 @@ export function Navbar({
               type="button"
               onClick={() => {
                 setMobileOpen(false);
-                onAskDoubtClick();
+                onContactClick();
               }}
               className="w-full py-2.5 px-4 text-sm font-semibold text-white bg-slate-900 hover:bg-slate-800 rounded-lg cursor-pointer"
             >
-              Ask Doubt — Advice Mission AI
+              Enquire Now
             </button>
           </div>
         </div>

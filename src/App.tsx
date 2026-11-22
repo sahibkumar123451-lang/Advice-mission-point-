@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { AboutSection } from './components/AboutSection';
 import { AdminPanel } from './components/AdminPanel';
-import { AdviceMissionAI } from './components/AdviceMissionAI';
 import { ContactSection } from './components/ContactSection';
 import { Footer } from './components/Footer';
 import { GallerySection } from './components/GallerySection';
@@ -26,8 +25,6 @@ export default function App() {
   const [adminInitialTab, setAdminInitialTab] = useState<
     'coaching' | 'teacher' | 'gallery' | 'hub' | 'enquiries'
   >('coaching');
-  const [aiFocusTrigger, setAiFocusTrigger] = useState(0);
-  const [aiExternalPrompt, setAiExternalPrompt] = useState<string | null>(null);
 
   const openAdminTab = useCallback(
     (tab: 'coaching' | 'teacher' | 'gallery' | 'hub' | 'enquiries' = 'coaching') => {
@@ -89,44 +86,30 @@ export default function App() {
     return () => unsubscribe();
   }, [loadSiteData]);
 
-  const jumpToAI = useCallback((prefillPrompt?: string) => {
-    if (prefillPrompt) {
-      setAiExternalPrompt(prefillPrompt);
-    }
-    const section = document.getElementById('advice-mission-ai');
+  const jumpToContact = useCallback(() => {
+    const section = document.getElementById('contact');
     if (section) {
       section.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
-    setAiFocusTrigger((n) => n + 1);
   }, []);
 
   return (
     <div className="min-h-screen flex flex-col bg-[#FAF9F6] text-slate-900">
       <Navbar
         coachingName={siteData.coaching.name}
-        onAskDoubtClick={() => jumpToAI()}
+        onContactClick={jumpToContact}
         onOpenAdminClick={() => openAdminTab('coaching')}
       />
 
       <main className="flex-1">
-        <HeroSection
-          coaching={siteData.coaching}
-          onAskQuestionClick={() => jumpToAI()}
-        />
+        <HeroSection coaching={siteData.coaching} />
 
         <AboutSection coaching={siteData.coaching} />
 
         <TeacherProfileSection teacher={siteData.teacher} />
 
-        <AdviceMissionAI
-          externalPrompt={aiExternalPrompt}
-          onExternalPromptConsumed={() => setAiExternalPrompt(null)}
-          focusTrigger={aiFocusTrigger}
-        />
-
         <LearningHubSection
           resources={siteData.learningHub}
-          onAskAIAboutTopic={(prompt) => jumpToAI(prompt)}
           onManageHubClick={() => openAdminTab('hub')}
         />
 
@@ -145,7 +128,6 @@ export default function App() {
         coaching={siteData.coaching}
         socialLinks={siteData.socialLinks}
         onOpenAdminClick={() => openAdminTab('coaching')}
-        onAskDoubtClick={() => jumpToAI()}
       />
 
       <AdminPanel

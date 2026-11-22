@@ -4,10 +4,9 @@ import { ResilientImage } from './ResilientImage';
 
 interface HeroSectionProps {
   coaching: CoachingInfo;
-  onAskQuestionClick: () => void;
 }
 
-export function HeroSection({ coaching, onAskQuestionClick }: HeroSectionProps) {
+export function HeroSection({ coaching }: HeroSectionProps) {
   const defaultHeroImage = '/src/assets/images/hero_coaching_campus_1795115509590.jpg';
   const resolvedHeroUrl =
     coaching.heroMediaUrl !== undefined ? coaching.heroMediaUrl.trim() : defaultHeroImage;
@@ -47,20 +46,19 @@ export function HeroSection({ coaching, onAskQuestionClick }: HeroSectionProps) 
             </p>
 
             <div className="mt-8 flex flex-wrap items-center gap-4">
-              <button
-                type="button"
-                onClick={onAskQuestionClick}
-                className="inline-flex items-center gap-2 px-6 py-3 text-sm sm:text-base font-semibold text-white bg-slate-900 hover:bg-slate-800 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-600 focus-visible:ring-offset-2"
-              >
-                <span>Ask Question on Advice Mission AI</span>
-                <ArrowRight className="w-4 h-4" aria-hidden="true" />
-              </button>
-
               <a
                 href="#learning-hub"
+                className="inline-flex items-center gap-2 px-6 py-3 text-sm sm:text-base font-semibold text-white bg-slate-900 hover:bg-slate-800 rounded-lg transition-colors whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-600 focus-visible:ring-offset-2"
+              >
+                <span>Explore Learning Hub</span>
+                <ArrowRight className="w-4 h-4" aria-hidden="true" />
+              </a>
+
+              <a
+                href="#contact"
                 className="inline-flex items-center gap-1.5 px-5 py-3 text-sm sm:text-base font-semibold text-slate-800 bg-white border border-slate-300 hover:border-slate-400 hover:bg-slate-50 rounded-lg transition-colors whitespace-nowrap shrink-0"
               >
-                Explore Learning Hub
+                Send Enquiry
               </a>
             </div>
 
@@ -80,7 +78,7 @@ export function HeroSection({ coaching, onAskQuestionClick }: HeroSectionProps) 
               <div>
                 <div className="text-xs font-medium text-slate-500">Doubt Support</div>
                 <div className="mt-1 text-base font-bold text-slate-900">
-                  Classroom + AI
+                  Classroom &amp; Notes
                 </div>
               </div>
             </div>

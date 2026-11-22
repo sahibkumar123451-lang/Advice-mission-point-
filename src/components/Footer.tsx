@@ -4,14 +4,12 @@ interface FooterProps {
   coaching: CoachingInfo;
   socialLinks: SocialLinks;
   onOpenAdminClick: () => void;
-  onAskDoubtClick: () => void;
 }
 
 export function Footer({
   coaching,
   socialLinks,
   onOpenAdminClick,
-  onAskDoubtClick,
 }: FooterProps) {
   return (
     <footer className="bg-slate-950 text-slate-300 border-t border-slate-800 py-12">
@@ -25,7 +23,7 @@ export function Footer({
               {coaching.tagline}
             </p>
             <p className="mt-3 text-sm text-slate-400 leading-relaxed max-w-sm">
-              {coaching.address} · Class 1 to Class 12 academic guidance, Advice Mission AI, and bilingual Learning Hub.
+              {coaching.address} · Class 1 to Class 12 academic guidance, bilingual Learning Hub, and Campus Gallery.
             </p>
           </div>
 
@@ -52,13 +50,9 @@ export function Footer({
               </a>
             </div>
             <div>
-              <button
-                type="button"
-                onClick={onAskDoubtClick}
-                className="hover:text-white transition-colors cursor-pointer"
-              >
-                Advice Mission AI
-              </button>
+              <a href="#contact" className="hover:text-white transition-colors">
+                Enquiry &amp; Contact
+              </a>
             </div>
           </div>
 
