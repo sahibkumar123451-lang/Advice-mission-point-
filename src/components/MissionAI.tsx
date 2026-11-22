@@ -393,6 +393,7 @@ export function MissionAI({
         }
 
         // Fallback to non-streaming /api/mission-ai/ask if streaming didn't emit any text
+        let fallbackErrorMessage = '';
         if (!receivedDelta) {
           try {
             setStatusNotice('Completing your reply via direct mode...');
@@ -406,9 +407,9 @@ export function MissionAI({
               signal: controller.signal,
             });
             const askType = (askRes.headers.get('content-type') || '').toLowerCase();
-            if (askRes.ok && askType.includes('application/json')) {
+            if (askType.includes('application/json')) {
               const data = (await askRes.json()) as { answer?: string; error?: string };
-              if (data.answer?.trim()) {
+              if (askRes.ok && data.answer?.trim()) {
                 receivedDelta = true;
                 setStatusNotice(null);
                 setMessages((prev) =>
@@ -418,6 +419,9 @@ export function MissionAI({
                 );
                 return;
               }
+              if (data.error) {
+                fallbackErrorMessage = data.error;
+              }
             }
           } catch {
             // Fall through to clean inline Ask Again message below
@@ -425,7 +429,8 @@ export function MissionAI({
         }
 
         const rawMsg =
-          streamErr instanceof Error ? streamErr.message : String(streamErr ?? '');
+          fallbackErrorMessage ||
+          (streamErr instanceof Error ? streamErr.message : String(streamErr ?? ''));
         const friendly = formatFriendlyAiError(rawMsg);
 
         setMessages((prev) =>
