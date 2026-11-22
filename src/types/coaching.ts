@@ -8,6 +8,8 @@ export type GalleryCategory =
 
 export type MediaType = 'image' | 'video' | 'pdf';
 
+export type DailyUpdateMediaType = 'none' | 'image' | 'video' | 'pdf';
+
 export interface CoachingInfo {
   name: string;
   tagline: string;
@@ -78,13 +80,38 @@ export interface EnquiryItem {
   createdAt: string;
 }
 
+export interface FeedbackRatingItem {
+  id: string;
+  fullName: string;
+  email: string;
+  emailHash: string;
+  rating: number;
+  feedback: string;
+  createdAt: string;
+}
+
+export interface DailyUpdateItem {
+  id: string;
+  title: string;
+  description: string;
+  date: string; // YYYY-MM-DD
+  mediaType: DailyUpdateMediaType;
+  mediaUrl?: string;
+  fileName?: string;
+  published: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface SiteData {
   coaching: CoachingInfo;
   socialLinks: SocialLinks;
   teacher: TeacherProfile;
   gallery: GalleryItem[];
   learningHub: LearningResource[];
+  dailyUpdates: DailyUpdateItem[];
   enquiries?: EnquiryItem[];
+  feedbacks?: FeedbackRatingItem[];
 }
 
 export interface ChatMessage {

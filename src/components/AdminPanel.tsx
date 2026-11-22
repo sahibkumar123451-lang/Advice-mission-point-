@@ -22,6 +22,8 @@ import {
 } from 'lucide-react';
 import type {
   CoachingInfo,
+  DailyUpdateItem,
+  DailyUpdateMediaType,
   EnquiryItem,
   GalleryCategory,
   GalleryItem,
@@ -56,11 +58,14 @@ import {
   verifyAdminPasscodeHash,
 } from '../utils/coachingLogic';
 import {
+  deleteDailyUpdateFromCloud,
+  deleteFeedbackFromCloud,
   deleteGalleryItemFromCloud,
   deleteLearningResourceFromCloud,
   loadAllAdminSiteDataFromFirestore,
   refreshAdminAuthSession,
   saveCoachingAndSocialsToCloud,
+  saveDailyUpdateToCloud,
   saveGalleryItemToCloud,
   saveLearningResourceToCloud,
   saveTeacherToCloud,
@@ -72,6 +77,17 @@ import {
 import { compressImageToDataUrl, readSmallPdfAsDataUrl } from '../utils/mediaHelpers';
 import { DEFAULT_SITE_DATA } from '../utils/seedData';
 import { ResilientImage } from './ResilientImage';
+import { AdminDailyUpdatesTab } from './admin/AdminDailyUpdatesTab';
+import { AdminFeedbackTab } from './admin/AdminFeedbackTab';
+
+export type AdminTab =
+  | 'coaching'
+  | 'teacher'
+  | 'updates'
+  | 'gallery'
+  | 'hub'
+  | 'feedback'
+  | 'enquiries';
 
 interface AdminPanelProps {
   isOpen: boolean;
@@ -80,7 +96,9 @@ interface AdminPanelProps {
   onSiteUpdated: () => Promise<void>;
 }
 
-type AdminTab = 'coaching' | 'teacher' | 'gallery' | 'hub' | 'enquiries';
+const INPUT_CLASS =
+  'w-full px-3 py-2 text-sm bg-[#09090B] border border-zinc-700 rounded-lg text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500';
+const LABEL_CLASS = 'block text-xs font-semibold text-slate-300 mb-1';
 
 export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: AdminPanelProps) {
   const [passcode, setPasscode] = useState('');
@@ -96,6 +114,7 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
   const [hasRetryAction, setHasRetryAction] = useState(false);
   const retryCallbackRef = useRef<(() => Promise<void>) | null>(null);
   const [saving, setSaving] = useState(false);
+  const [refreshingFeedbacks, setRefreshingFeedbacks] = useState(false);
   const [cloudUser, setCloudUser] = useState<User | null>(null);
   const [cloudBusy, setCloudBusy] = useState(false);
   const [isOffline, setIsOffline] = useState(() =>
@@ -229,6 +248,7 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
   function buildLiveExportSiteData(extra?: {
     pendingItem?: GalleryItem;
     pendingHub?: LearningResource;
+    pendingUpdate?: DailyUpdateItem;
   }): SiteData {
     const base: SiteData = adminData || structuredClone(DEFAULT_SITE_DATA);
     let combined = buildSiteDataWithDraftEdits(base, {
@@ -248,6 +268,11 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
         learningHub: [extra.pendingHub],
       });
     }
+    if (extra?.pendingUpdate) {
+      combined = mergeSiteDataPreserveExisting(combined, {
+        dailyUpdates: [extra.pendingUpdate],
+      });
+    }
     return combined;
   }
 
@@ -256,10 +281,11 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
     extra?: {
       pendingItem?: GalleryItem;
       pendingHub?: LearningResource;
+      pendingUpdate?: DailyUpdateItem;
     },
   ) {
     const snapshotData = buildLiveExportSiteData(extra);
-    if (extra?.pendingItem || extra?.pendingHub) {
+    if (extra?.pendingItem || extra?.pendingHub || extra?.pendingUpdate) {
       setAdminData(snapshotData);
     }
     saveAdminDraftToStorage({
@@ -304,6 +330,7 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
     extraDraft?: {
       pendingItem?: GalleryItem;
       pendingHub?: LearningResource;
+      pendingUpdate?: DailyUpdateItem;
     },
   ) {
     persistCurrentDraft('network-error', extraDraft);
@@ -385,7 +412,15 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
           headers: { 'x-admin-token': token },
         });
         if (res.ok) {
-          data = (await res.json()) as SiteData;
+          const parsed = (await res.json()) as Partial<SiteData>;
+          data = {
+            ...DEFAULT_SITE_DATA,
+            ...parsed,
+            dailyUpdates: Array.isArray(parsed.dailyUpdates)
+              ? parsed.dailyUpdates
+              : DEFAULT_SITE_DATA.dailyUpdates,
+            feedbacks: Array.isArray(parsed.feedbacks) ? parsed.feedbacks : [],
+          };
         }
       } catch {
         // Fall back to default + Firestore data if backend is unavailable
@@ -399,7 +434,9 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
           cloudData.socialLinks ||
           cloudData.teacher ||
           (cloudData.gallery && cloudData.gallery.length > 0) ||
-          (cloudData.learningHub && cloudData.learningHub.length > 0),
+          (cloudData.learningHub && cloudData.learningHub.length > 0) ||
+          (cloudData.dailyUpdates && cloudData.dailyUpdates.length > 0) ||
+          (cloudData.feedbacks && cloudData.feedbacks.length > 0),
       );
       if (hasCloud) {
         data = mergeSiteDataPreserveExisting(data, cloudData);
@@ -409,6 +446,12 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
           }
           if (cloudData.learningHub && cloudData.learningHub.length > 0) {
             data.learningHub = cloudData.learningHub;
+          }
+          if (cloudData.dailyUpdates && cloudData.dailyUpdates.length > 0) {
+            data.dailyUpdates = cloudData.dailyUpdates;
+          }
+          if (cloudData.feedbacks && cloudData.feedbacks.length > 0) {
+            data.feedbacks = cloudData.feedbacks;
           }
         }
       }
@@ -466,12 +509,15 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
       if (latestData) {
         await syncSiteDataToCloudNonDestructive(latestData);
       }
+      if (authToken) {
+        await fetchAdminData(authToken);
+      }
       await onSiteUpdated();
       clearAdminDraftFromStorage();
       setHasLocalPendingDraft(false);
       setSavedDraftNotice(null);
       setStatusMessage(
-        `Cloud Sync connected as ${user.email}. All edits will stay saved across publishes.`,
+        `Cloud Sync connected as ${user.email}. All edits & updates will stay saved across publishes.`,
       );
     } catch (err) {
       surfaceFirebaseOrNetworkError(err, handleConnectCloudSync);
@@ -494,7 +540,7 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
       clearAdminDraftFromStorage();
       setHasLocalPendingDraft(false);
       setSavedDraftNotice(null);
-      setStatusMessage('All current edits safely synced to Cloud Firestore.');
+      setStatusMessage('All current edits & Daily Updates safely synced to Cloud Firestore.');
     } catch (err) {
       surfaceFirebaseOrNetworkError(err, handleManualCloudSync);
     } finally {
@@ -517,6 +563,7 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
         teacher: sourceData.teacher,
         gallery: sourceData.gallery,
         learningHub: sourceData.learningHub,
+        dailyUpdates: sourceData.dailyUpdates || [],
       },
     };
     const blob = new Blob([JSON.stringify(payload, null, 2)], {
@@ -632,7 +679,6 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
           return;
         }
 
-        // Static deployments (e.g. Vercel) return 404/405/HTML for /api/admin/login
         fallbackToCloudLogin = true;
       } catch {
         fallbackToCloudLogin = true;
@@ -660,7 +706,6 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
     setUploadingFile(true);
     setErrorMessage(null);
     try {
-      // Persist photos & compact PDFs as Firestore-safe data URLs when possible so they live-sync everywhere
       if (file.type.startsWith('image/')) {
         const compressed = await compressImageToDataUrl(file);
         if (compressed) {
@@ -700,6 +745,268 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
       return null;
     } finally {
       setUploadingFile(false);
+    }
+  }
+
+  // Daily Updates Handlers
+  async function handleCreateDailyUpdate(draft: {
+    title: string;
+    description: string;
+    date: string;
+    mediaType: DailyUpdateMediaType;
+    mediaUrl?: string;
+    fileName?: string;
+    published: boolean;
+  }): Promise<boolean> {
+    if (!authToken) return false;
+    const isCloudOnly = authToken === 'cloud-session';
+    if (isCloudOnly && !(await ensureCloudWriterReady(() => handleCreateDailyUpdate(draft).then(() => undefined)))) {
+      return false;
+    }
+
+    const now = new Date().toISOString();
+    let itemToSync: DailyUpdateItem = {
+      id: `upd-${crypto.randomUUID().slice(0, 8)}`,
+      title: draft.title,
+      description: draft.description,
+      date: draft.date,
+      mediaType: draft.mediaType,
+      mediaUrl: draft.mediaUrl,
+      fileName: draft.fileName,
+      published: draft.published,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    setSaving(true);
+    setStatusMessage(null);
+    clearErrorBanner();
+    try {
+      if (!isCloudOnly) {
+        const res = await fetch('/api/admin/daily-updates', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-admin-token': authToken,
+          },
+          body: JSON.stringify(draft),
+        });
+        const body = (await res.json()) as { update?: DailyUpdateItem; error?: string };
+        if (!res.ok) {
+          setErrorMessage(body.error || 'Unable to publish daily update.');
+          return false;
+        }
+        if (body.update) itemToSync = body.update;
+      }
+
+      if (cloudUser || isCloudOnly) {
+        await saveDailyUpdateToCloud(itemToSync);
+      }
+      await fetchAdminData(authToken);
+      await onSiteUpdated();
+      clearAdminDraftFromStorage();
+      setHasLocalPendingDraft(false);
+      setStatusMessage(
+        cloudUser || isCloudOnly
+          ? `Daily Update "${itemToSync.title}" published LIVE everywhere!`
+          : `Daily Update "${itemToSync.title}" saved to database.`,
+      );
+      return true;
+    } catch (err) {
+      surfaceFirebaseOrNetworkError(
+        err,
+        async () => {
+          await handleCreateDailyUpdate(draft);
+        },
+        { pendingUpdate: itemToSync },
+      );
+      return false;
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleSaveEditDailyUpdate(
+    id: string,
+    next: {
+      title: string;
+      description: string;
+      date: string;
+      mediaType: DailyUpdateMediaType;
+      mediaUrl?: string;
+      fileName?: string;
+      published: boolean;
+    },
+  ): Promise<boolean> {
+    if (!authToken) return false;
+    const isCloudOnly = authToken === 'cloud-session';
+    if (isCloudOnly && !(await ensureCloudWriterReady(() => handleSaveEditDailyUpdate(id, next).then(() => undefined)))) {
+      return false;
+    }
+
+    const existingItem = (adminData?.dailyUpdates || []).find((u) => u.id === id);
+    let itemToSync: DailyUpdateItem = {
+      id,
+      title: next.title,
+      description: next.description,
+      date: next.date,
+      mediaType: next.mediaType,
+      mediaUrl: next.mediaUrl,
+      fileName: next.fileName,
+      published: next.published,
+      createdAt: existingItem?.createdAt || new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    setSaving(true);
+    setStatusMessage(null);
+    clearErrorBanner();
+    try {
+      if (!isCloudOnly) {
+        const res = await fetch(`/api/admin/daily-updates/${id}`, {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-admin-token': authToken,
+          },
+          body: JSON.stringify({
+            ...next,
+            mediaUrl: next.mediaUrl ?? '',
+            fileName: next.fileName ?? '',
+          }),
+        });
+        const body = (await res.json()) as { update?: DailyUpdateItem; error?: string };
+        if (!res.ok) {
+          setErrorMessage(body.error || 'Unable to update daily update.');
+          return false;
+        }
+        if (body.update) itemToSync = body.update;
+      }
+
+      if (cloudUser || isCloudOnly) {
+        await saveDailyUpdateToCloud(itemToSync);
+      }
+      await fetchAdminData(authToken);
+      await onSiteUpdated();
+      clearAdminDraftFromStorage();
+      setHasLocalPendingDraft(false);
+      setStatusMessage(`Updated Daily Update "${itemToSync.title}".`);
+      return true;
+    } catch (err) {
+      surfaceFirebaseOrNetworkError(
+        err,
+        async () => {
+          await handleSaveEditDailyUpdate(id, next);
+        },
+        { pendingUpdate: itemToSync },
+      );
+      return false;
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleTogglePublishDailyUpdate(item: DailyUpdateItem): Promise<void> {
+    if (!authToken) return;
+    const isCloudOnly = authToken === 'cloud-session';
+    if (isCloudOnly && !(await ensureCloudWriterReady(() => handleTogglePublishDailyUpdate(item)))) {
+      return;
+    }
+
+    let itemToSync: DailyUpdateItem = {
+      ...item,
+      published: !item.published,
+      updatedAt: new Date().toISOString(),
+    };
+    clearErrorBanner();
+    try {
+      if (!isCloudOnly) {
+        const res = await fetch(`/api/admin/daily-updates/${item.id}`, {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-admin-token': authToken,
+          },
+          body: JSON.stringify({ published: !item.published }),
+        });
+        if (res.ok) {
+          const body = (await res.json()) as { update?: DailyUpdateItem };
+          if (body.update) itemToSync = body.update;
+        }
+      }
+
+      if (cloudUser || isCloudOnly) {
+        await saveDailyUpdateToCloud(itemToSync);
+      }
+      await fetchAdminData(authToken);
+      await onSiteUpdated();
+    } catch (err) {
+      surfaceFirebaseOrNetworkError(err, () => handleTogglePublishDailyUpdate(item), {
+        pendingUpdate: itemToSync,
+      });
+    }
+  }
+
+  async function handleDeleteDailyUpdate(id: string): Promise<void> {
+    if (!authToken) return;
+    const isCloudOnly = authToken === 'cloud-session';
+    if (isCloudOnly && !(await ensureCloudWriterReady(() => handleDeleteDailyUpdate(id)))) return;
+
+    clearErrorBanner();
+    try {
+      if (!isCloudOnly) {
+        await fetch(`/api/admin/daily-updates/${id}`, {
+          method: 'DELETE',
+          headers: { 'x-admin-token': authToken },
+        });
+      }
+      if (cloudUser || isCloudOnly) {
+        await deleteDailyUpdateFromCloud(id);
+      }
+      await fetchAdminData(authToken);
+      await onSiteUpdated();
+      setStatusMessage('Daily update deleted.');
+    } catch (err) {
+      surfaceFirebaseOrNetworkError(err, () => handleDeleteDailyUpdate(id));
+    }
+  }
+
+  // User Feedback & Ratings Handlers
+  async function handleRefreshFeedbacks() {
+    if (!authToken) return;
+    setRefreshingFeedbacks(true);
+    clearErrorBanner();
+    try {
+      await fetchAdminData(authToken);
+    } finally {
+      setRefreshingFeedbacks(false);
+    }
+  }
+
+  async function handleDeleteFeedback(id: string) {
+    if (!authToken) return;
+    const isCloudOnly = authToken === 'cloud-session';
+    if (isCloudOnly && !(await ensureCloudWriterReady(() => handleDeleteFeedback(id)))) return;
+
+    clearErrorBanner();
+    try {
+      if (!isCloudOnly) {
+        try {
+          await fetch(`/api/admin/feedback/${id}`, {
+            method: 'DELETE',
+            headers: { 'x-admin-token': authToken },
+          });
+        } catch {
+          // Proceed to cloud deletion
+        }
+      }
+      if (cloudUser || isCloudOnly) {
+        await deleteFeedbackFromCloud(id);
+      }
+      await fetchAdminData(authToken);
+      setStatusMessage('Feedback entry removed.');
+    } catch (err) {
+      surfaceFirebaseOrNetworkError(err, () => handleDeleteFeedback(id));
     }
   }
 
@@ -1721,20 +2028,20 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
 
   return (
     <div
-      className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-xs flex items-center justify-center p-3 sm:p-6"
+      className="fixed inset-0 z-50 bg-black/85 backdrop-blur-xs flex items-center justify-center p-3 sm:p-6"
       role="dialog"
       aria-modal="true"
       aria-labelledby="admin-panel-heading"
     >
-      <div className="w-full max-w-5xl max-h-[92vh] bg-white rounded-2xl border border-slate-200 shadow-2xl flex flex-col overflow-hidden">
+      <div className="w-full max-w-5xl max-h-[92vh] bg-[#111318] rounded-2xl border border-zinc-800 shadow-2xl flex flex-col overflow-hidden text-slate-100">
         {/* Top Admin Bar */}
-        <div className="px-5 sm:px-6 py-4 border-b border-slate-200 bg-[#FAF9F6] flex items-center justify-between gap-4">
+        <div className="px-5 sm:px-6 py-4 border-b border-zinc-800 bg-[#09090B] flex items-center justify-between gap-4">
           <div>
-            <h2 id="admin-panel-heading" className="text-lg sm:text-xl font-bold text-slate-950">
-              Advice Mission Point — Admin Panel
+            <h2 id="admin-panel-heading" className="text-lg sm:text-xl font-bold text-white">
+              Advice Mission Point — Admin Dashboard
             </h2>
-            <p className="text-xs text-slate-600">
-              Manage teacher profile, Google Maps link, social channels, gallery media, and Learning Hub notes.
+            <p className="text-xs text-slate-400">
+              Manage Daily Updates, User Feedback &amp; Ratings, teacher profile, gallery media, and Learning Hub notes.
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -1753,9 +2060,9 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                     });
                   }
                 }}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-700 border border-slate-300 hover:bg-slate-100 rounded-lg cursor-pointer"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-200 border border-zinc-700 hover:bg-zinc-800 rounded-lg cursor-pointer"
               >
-                <LogOut className="w-3.5 h-3.5" aria-hidden="true" />
+                <LogOut className="w-3.5 h-3.5 text-red-400" aria-hidden="true" />
                 <span>Sign Out</span>
               </button>
             )}
@@ -1763,7 +2070,7 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
               type="button"
               aria-label="Close Admin Panel"
               onClick={onClose}
-              className="w-9 h-9 inline-flex items-center justify-center rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-100 cursor-pointer"
+              className="w-9 h-9 inline-flex items-center justify-center rounded-lg border border-zinc-700 text-slate-300 hover:bg-zinc-800 hover:text-white cursor-pointer"
             >
               <X className="w-5 h-5" />
             </button>
@@ -1774,20 +2081,20 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
         <div className="flex-1 overflow-y-auto p-5 sm:p-6">
           {!authToken ? (
             <form onSubmit={handleLogin} autoComplete="off" className="max-w-md mx-auto py-10 space-y-4">
-              <div className="w-12 h-12 rounded-xl bg-slate-900 text-amber-400 flex items-center justify-center mx-auto">
+              <div className="w-12 h-12 rounded-xl bg-red-500/15 border border-red-500/40 text-red-400 flex items-center justify-center mx-auto">
                 <Lock className="w-6 h-6" aria-hidden="true" />
               </div>
               <div className="text-center">
-                <h3 className="text-xl font-bold text-slate-950">Administrator Access</h3>
-                <p className="mt-1 text-sm text-slate-600">
-                  Enter your coaching admin password to edit site details and manage gallery content.
+                <h3 className="text-xl font-bold text-white">Administrator Access</h3>
+                <p className="mt-1 text-sm text-slate-400">
+                  Enter your coaching admin password to access Daily Updates, private User Feedback &amp; Ratings, and site controls.
                 </p>
               </div>
 
               <div>
                 <label
                   htmlFor="admin-passcode-input"
-                  className="block text-sm font-semibold text-slate-800 mb-1.5"
+                  className="block text-sm font-semibold text-slate-200 mb-1.5"
                 >
                   Admin Passcode
                 </label>
@@ -1798,12 +2105,12 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                   value={passcode}
                   onChange={(e) => setPasscode(e.target.value)}
                   placeholder="Enter admin passcode"
-                  className="w-full px-3.5 py-2.5 text-sm bg-[#FAF9F6] border border-slate-300 rounded-lg text-slate-900 focus:outline-none focus:ring-2 focus:ring-amber-600"
+                  className={INPUT_CLASS}
                 />
               </div>
 
               {authError && (
-                <p role="alert" className="text-sm text-red-700 font-medium">
+                <p role="alert" className="text-sm text-red-400 font-medium">
                   {authError}
                 </p>
               )}
@@ -1811,21 +2118,29 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
               <button
                 type="submit"
                 disabled={loggingIn || !passcode.trim()}
-                className="w-full py-2.5 px-4 text-sm font-semibold text-white bg-slate-900 hover:bg-slate-800 disabled:opacity-50 rounded-lg cursor-pointer"
+                className="w-full py-2.5 px-4 text-sm font-semibold text-white bg-blue-600 hover:bg-blue-500 disabled:opacity-50 rounded-lg cursor-pointer"
               >
-                {loggingIn ? 'Verifying...' : 'Unlock Admin Panel'}
+                {loggingIn ? 'Verifying...' : 'Unlock Admin Dashboard'}
               </button>
             </form>
           ) : (
             <div>
               {/* Admin Section Tabs */}
-              <div className="flex flex-wrap gap-2 pb-5 border-b border-slate-200 mb-6">
+              <div className="flex flex-wrap gap-2 pb-5 border-b border-zinc-800 mb-6">
                 {(
                   [
                     { id: 'coaching', label: 'Coaching & Hero Media' },
                     { id: 'teacher', label: 'Teacher Profile' },
+                    {
+                      id: 'updates',
+                      label: `Daily Updates (${adminData?.dailyUpdates?.length || 0})`,
+                    },
                     { id: 'gallery', label: 'Photos, Videos & PDFs' },
                     { id: 'hub', label: 'Learning Hub & PDFs' },
+                    {
+                      id: 'feedback',
+                      label: `User Feedback & Ratings (${adminData?.feedbacks?.length || 0})`,
+                    },
                     {
                       id: 'enquiries',
                       label: `Enquiries (${adminData?.enquiries?.length || 0})`,
@@ -1842,8 +2157,8 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                     }}
                     className={`px-3.5 py-2 text-xs sm:text-sm font-semibold rounded-lg transition-colors whitespace-nowrap cursor-pointer ${
                       activeTab === tab.id
-                        ? 'bg-slate-900 text-white'
-                        : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                        ? 'bg-blue-600 text-white border border-blue-500'
+                        : 'bg-[#0D0F14] text-slate-300 border border-zinc-800 hover:border-zinc-700 hover:text-white'
                     }`}
                   >
                     {tab.label}
@@ -1852,23 +2167,23 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
               </div>
 
               {/* Permanent Cloud Persistence & Backup Bar */}
-              <div className="mb-5 p-3.5 sm:p-4 rounded-xl border border-slate-200 bg-[#FAF9F6] flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+              <div className="mb-5 p-3.5 sm:p-4 rounded-xl border border-zinc-800 bg-[#0D0F14] flex flex-col lg:flex-row lg:items-center justify-between gap-3">
                 <div className="flex items-start gap-2.5">
                   <Cloud
                     className={`w-5 h-5 shrink-0 mt-0.5 ${
-                      cloudUser ? 'text-emerald-700' : 'text-amber-700'
+                      cloudUser ? 'text-blue-400' : 'text-red-400'
                     }`}
                     aria-hidden="true"
                   />
                   <div>
-                    <p className="text-xs sm:text-sm font-semibold text-slate-900">
+                    <p className="text-xs sm:text-sm font-semibold text-white">
                       {cloudUser
                         ? `Permanent Cloud Sync Active (${cloudUser.email})`
                         : 'Permanent Cloud Sync & Publish Protection'}
                     </p>
-                    <p className="text-xs text-slate-600 mt-0.5">
+                    <p className="text-xs text-slate-400 mt-0.5">
                       {cloudUser
-                        ? 'Your edits, photos, PDFs, and profile updates are stored in Cloud Firestore so previous changes never disappear when publishing.'
+                        ? 'Your edits, Daily Updates, photos, PDFs, and private feedback stay synced in Cloud Firestore across publishes.'
                         : 'Connect Google Cloud Sync once so all published edits stay safe across updates, or download/merge a JSON backup anytime.'}
                     </p>
                   </div>
@@ -1880,7 +2195,7 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                       type="button"
                       disabled={cloudBusy}
                       onClick={() => void handleConnectCloudSync()}
-                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-slate-900 hover:bg-slate-800 disabled:opacity-50 rounded-lg cursor-pointer"
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-500 disabled:opacity-50 rounded-lg cursor-pointer"
                     >
                       <Cloud className="w-3.5 h-3.5" aria-hidden="true" />
                       <span>{cloudBusy ? 'Connecting...' : 'Connect Cloud Sync'}</span>
@@ -1891,7 +2206,7 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                         type="button"
                         disabled={cloudBusy}
                         onClick={() => void handleManualCloudSync()}
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-emerald-700 hover:bg-emerald-800 disabled:opacity-50 rounded-lg cursor-pointer"
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-500 disabled:opacity-50 rounded-lg cursor-pointer"
                       >
                         <RefreshCw className="w-3.5 h-3.5" aria-hidden="true" />
                         <span>{cloudBusy ? 'Syncing...' : 'Sync All to Cloud'}</span>
@@ -1899,7 +2214,7 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                       <button
                         type="button"
                         onClick={() => void signOutFirebaseAdmin()}
-                        className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold text-slate-700 bg-white border border-slate-300 hover:bg-slate-100 rounded-lg cursor-pointer"
+                        className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold text-slate-300 bg-[#141720] border border-zinc-700 hover:bg-zinc-800 rounded-lg cursor-pointer"
                       >
                         <span>Disconnect Cloud</span>
                       </button>
@@ -1909,14 +2224,14 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                   <button
                     type="button"
                     onClick={() => handleDownloadBackup(false)}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-800 bg-white border border-slate-300 hover:bg-slate-100 rounded-lg cursor-pointer"
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-200 bg-[#141720] border border-zinc-700 hover:bg-zinc-800 rounded-lg cursor-pointer"
                   >
-                    <Download className="w-3.5 h-3.5" aria-hidden="true" />
+                    <Download className="w-3.5 h-3.5 text-blue-400" aria-hidden="true" />
                     <span>Download Backup</span>
                   </button>
 
-                  <label className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-800 bg-white border border-slate-300 hover:bg-slate-100 rounded-lg cursor-pointer">
-                    <Upload className="w-3.5 h-3.5" aria-hidden="true" />
+                  <label className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-200 bg-[#141720] border border-zinc-700 hover:bg-zinc-800 rounded-lg cursor-pointer">
+                    <Upload className="w-3.5 h-3.5 text-red-400" aria-hidden="true" />
                     <span>Restore / Merge</span>
                     <input
                       type="file"
@@ -1935,15 +2250,15 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
               {isOffline && (
                 <div
                   role="status"
-                  className="mb-5 p-3.5 rounded-xl bg-amber-50 border border-amber-200 text-amber-950 text-xs sm:text-sm flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                  className="mb-5 p-3.5 rounded-xl bg-amber-950/40 border border-amber-500/40 text-amber-200 text-xs sm:text-sm flex flex-col sm:flex-row sm:items-center justify-between gap-3"
                 >
                   <div className="flex items-start gap-2.5">
-                    <WifiOff className="w-4 h-4 shrink-0 mt-0.5 text-amber-700" aria-hidden="true" />
+                    <WifiOff className="w-4 h-4 shrink-0 mt-0.5 text-amber-400" aria-hidden="true" />
                     <div>
-                      <p className="font-semibold">
+                      <p className="font-semibold text-white">
                         You appear to be offline — your edits stay safe locally.
                       </p>
-                      <p className="text-xs text-amber-900/90 mt-0.5">
+                      <p className="text-xs text-amber-200/80 mt-0.5">
                         Check your internet, DNS, or VPN connection. You can download a local JSON backup now and click Retry once connected.
                       </p>
                     </div>
@@ -1951,7 +2266,7 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                   <button
                     type="button"
                     onClick={() => handleDownloadBackup(false)}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-amber-950 bg-white border border-amber-300 hover:bg-amber-100 rounded-lg cursor-pointer shrink-0"
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-[#141720] border border-amber-500/40 hover:bg-zinc-800 rounded-lg cursor-pointer shrink-0"
                   >
                     <Download className="w-3.5 h-3.5" aria-hidden="true" />
                     <span>Save Backup JSON</span>
@@ -1962,15 +2277,15 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
               {savedDraftNotice && (
                 <div
                   role="status"
-                  className="mb-5 p-3.5 rounded-xl bg-amber-50 border border-amber-200 text-amber-950 text-xs sm:text-sm flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                  className="mb-5 p-3.5 rounded-xl bg-blue-950/40 border border-blue-500/40 text-blue-100 text-xs sm:text-sm flex flex-col sm:flex-row sm:items-center justify-between gap-3"
                 >
                   <div className="flex items-start gap-2.5">
-                    <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5 text-amber-700" aria-hidden="true" />
+                    <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5 text-blue-400" aria-hidden="true" />
                     <div>
-                      <p className="font-semibold">
+                      <p className="font-semibold text-white">
                         Saved local draft found from {formatDisplayDate(savedDraftNotice.updatedAt)}
                       </p>
-                      <p className="text-xs text-amber-900/90 mt-0.5">
+                      <p className="text-xs text-blue-200/80 mt-0.5">
                         Your previous edits were preserved automatically during a connection interruption. Restore them to continue or export a JSON backup.
                       </p>
                     </div>
@@ -1979,14 +2294,14 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                     <button
                       type="button"
                       onClick={handleRestoreSavedDraft}
-                      className="px-3 py-1.5 text-xs font-semibold text-white bg-slate-900 hover:bg-slate-800 rounded-lg cursor-pointer"
+                      className="px-3 py-1.5 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-500 rounded-lg cursor-pointer"
                     >
                       Restore Draft
                     </button>
                     <button
                       type="button"
                       onClick={() => handleDownloadBackup(true)}
-                      className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-semibold text-amber-950 bg-white border border-amber-300 hover:bg-amber-100 rounded-lg cursor-pointer"
+                      className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-semibold text-slate-200 bg-[#141720] border border-zinc-700 hover:bg-zinc-800 rounded-lg cursor-pointer"
                     >
                       <Download className="w-3.5 h-3.5" aria-hidden="true" />
                       <span>Export Draft JSON</span>
@@ -1994,7 +2309,7 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                     <button
                       type="button"
                       onClick={handleDiscardSavedDraft}
-                      className="px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:bg-amber-100 rounded-lg cursor-pointer"
+                      className="px-2.5 py-1.5 text-xs font-semibold text-red-400 hover:bg-red-950/40 rounded-lg cursor-pointer"
                     >
                       Discard
                     </button>
@@ -2005,9 +2320,9 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
               {statusMessage && (
                 <div
                   role="status"
-                  className="mb-5 flex items-center gap-2 p-3 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-900 text-sm font-medium"
+                  className="mb-5 flex items-center gap-2 p-3 rounded-lg bg-blue-950/50 border border-blue-500/40 text-blue-100 text-sm font-medium"
                 >
-                  <Check className="w-4 h-4 shrink-0" aria-hidden="true" />
+                  <Check className="w-4 h-4 text-blue-400 shrink-0" aria-hidden="true" />
                   <span>{statusMessage}</span>
                 </div>
               )}
@@ -2015,12 +2330,12 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
               {errorMessage && (
                 <div
                   role="alert"
-                  className="mb-5 p-3.5 sm:p-4 rounded-xl bg-red-50 border border-red-200 text-red-900 text-sm flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                  className="mb-5 p-3.5 sm:p-4 rounded-xl bg-red-950/50 border border-red-500/40 text-red-100 text-sm flex flex-col sm:flex-row sm:items-center justify-between gap-3"
                 >
                   <div className="space-y-1">
-                    <p className="font-semibold">{errorMessage}</p>
+                    <p className="font-semibold text-white">{errorMessage}</p>
                     {errorHint && (
-                      <p className="text-xs text-red-800/90 leading-relaxed">{errorHint}</p>
+                      <p className="text-xs text-red-200/90 leading-relaxed">{errorHint}</p>
                     )}
                   </div>
                   <div className="flex flex-wrap items-center gap-2 shrink-0">
@@ -2029,7 +2344,7 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                         type="button"
                         disabled={saving || cloudBusy}
                         onClick={() => void handleRetryLastAction()}
-                        className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold text-white bg-red-700 hover:bg-red-800 disabled:opacity-50 rounded-lg cursor-pointer"
+                        className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold text-white bg-red-600 hover:bg-red-500 disabled:opacity-50 rounded-lg cursor-pointer"
                       >
                         <RefreshCw className="w-3.5 h-3.5" aria-hidden="true" />
                         <span>{saving || cloudBusy ? 'Retrying...' : 'Retry'}</span>
@@ -2039,7 +2354,7 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                       <button
                         type="button"
                         onClick={() => handleDownloadBackup(false)}
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-900 bg-white border border-red-200 hover:bg-red-100/70 rounded-lg cursor-pointer"
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-200 bg-[#141720] border border-red-500/40 hover:bg-zinc-800 rounded-lg cursor-pointer"
                       >
                         <Download className="w-3.5 h-3.5" aria-hidden="true" />
                         <span>Export Backup JSON</span>
@@ -2054,7 +2369,7 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                 <form onSubmit={saveCoachingAndSocials} className="space-y-6">
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div>
-                      <label htmlFor="admin-coaching-name" className="block text-xs font-semibold text-slate-700 mb-1">
+                      <label htmlFor="admin-coaching-name" className={LABEL_CLASS}>
                         Coaching Name
                       </label>
                       <input
@@ -2064,11 +2379,11 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                         onChange={(e) =>
                           setCoachingForm({ ...coachingForm, name: e.target.value })
                         }
-                        className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg"
+                        className={INPUT_CLASS}
                       />
                     </div>
                     <div>
-                      <label htmlFor="admin-coaching-tagline" className="block text-xs font-semibold text-slate-700 mb-1">
+                      <label htmlFor="admin-coaching-tagline" className={LABEL_CLASS}>
                         Tagline
                       </label>
                       <input
@@ -2078,11 +2393,11 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                         onChange={(e) =>
                           setCoachingForm({ ...coachingForm, tagline: e.target.value })
                         }
-                        className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg"
+                        className={INPUT_CLASS}
                       />
                     </div>
                     <div className="md:col-span-2">
-                      <label htmlFor="admin-welcome-headline" className="block text-xs font-semibold text-slate-700 mb-1">
+                      <label htmlFor="admin-welcome-headline" className={LABEL_CLASS}>
                         Welcome Headline
                       </label>
                       <input
@@ -2092,11 +2407,11 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                         onChange={(e) =>
                           setCoachingForm({ ...coachingForm, welcomeHeadline: e.target.value })
                         }
-                        className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg"
+                        className={INPUT_CLASS}
                       />
                     </div>
                     <div className="md:col-span-2">
-                      <label htmlFor="admin-welcome-subtitle" className="block text-xs font-semibold text-slate-700 mb-1">
+                      <label htmlFor="admin-welcome-subtitle" className={LABEL_CLASS}>
                         Welcome Subtitle
                       </label>
                       <textarea
@@ -2106,11 +2421,11 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                         onChange={(e) =>
                           setCoachingForm({ ...coachingForm, welcomeSubtitle: e.target.value })
                         }
-                        className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg"
+                        className={INPUT_CLASS}
                       />
                     </div>
                     <div className="md:col-span-2">
-                      <label htmlFor="admin-about-desc" className="block text-xs font-semibold text-slate-700 mb-1">
+                      <label htmlFor="admin-about-desc" className={LABEL_CLASS}>
                         About Coaching Description
                       </label>
                       <textarea
@@ -2120,11 +2435,11 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                         onChange={(e) =>
                           setCoachingForm({ ...coachingForm, aboutDescription: e.target.value })
                         }
-                        className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg"
+                        className={INPUT_CLASS}
                       />
                     </div>
                     <div>
-                      <label htmlFor="admin-coaching-address" className="block text-xs font-semibold text-slate-700 mb-1">
+                      <label htmlFor="admin-coaching-address" className={LABEL_CLASS}>
                         Coaching Address
                       </label>
                       <input
@@ -2134,11 +2449,11 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                         onChange={(e) =>
                           setCoachingForm({ ...coachingForm, address: e.target.value })
                         }
-                        className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg"
+                        className={INPUT_CLASS}
                       />
                     </div>
                     <div>
-                      <label htmlFor="admin-google-maps-url" className="block text-xs font-semibold text-slate-700 mb-1">
+                      <label htmlFor="admin-google-maps-url" className={LABEL_CLASS}>
                         Google Maps Link
                       </label>
                       <input
@@ -2148,11 +2463,11 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                         onChange={(e) =>
                           setCoachingForm({ ...coachingForm, googleMapsUrl: e.target.value })
                         }
-                        className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg"
+                        className={INPUT_CLASS}
                       />
                     </div>
                     <div>
-                      <label htmlFor="admin-coaching-phone" className="block text-xs font-semibold text-slate-700 mb-1">
+                      <label htmlFor="admin-coaching-phone" className={LABEL_CLASS}>
                         Phone Number
                       </label>
                       <input
@@ -2162,11 +2477,11 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                         onChange={(e) =>
                           setCoachingForm({ ...coachingForm, phone: e.target.value })
                         }
-                        className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg"
+                        className={INPUT_CLASS}
                       />
                     </div>
                     <div>
-                      <label htmlFor="admin-coaching-email" className="block text-xs font-semibold text-slate-700 mb-1">
+                      <label htmlFor="admin-coaching-email" className={LABEL_CLASS}>
                         Email Address
                       </label>
                       <input
@@ -2176,11 +2491,11 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                         onChange={(e) =>
                           setCoachingForm({ ...coachingForm, email: e.target.value })
                         }
-                        className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg"
+                        className={INPUT_CLASS}
                       />
                     </div>
                     <div className="md:col-span-2">
-                      <label htmlFor="admin-office-hours" className="block text-xs font-semibold text-slate-700 mb-1">
+                      <label htmlFor="admin-office-hours" className={LABEL_CLASS}>
                         Class &amp; Office Timings
                       </label>
                       <input
@@ -2190,18 +2505,18 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                         onChange={(e) =>
                           setCoachingForm({ ...coachingForm, officeHours: e.target.value })
                         }
-                        className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg"
+                        className={INPUT_CLASS}
                       />
                     </div>
                   </div>
 
-                  <div className="pt-4 border-t border-slate-200">
-                    <h3 className="text-sm font-bold text-slate-900 mb-3">
+                  <div className="pt-4 border-t border-zinc-800">
+                    <h3 className="text-sm font-bold text-white mb-3">
                       Social Media Links
                     </h3>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                       <div>
-                        <label htmlFor="admin-social-whatsapp" className="block text-xs font-semibold text-slate-700 mb-1">
+                        <label htmlFor="admin-social-whatsapp" className={LABEL_CLASS}>
                           WhatsApp Link or Phone Number
                         </label>
                         <input
@@ -2211,11 +2526,11 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                           onChange={(e) =>
                             setSocialForm({ ...socialForm, whatsapp: e.target.value })
                           }
-                          className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg"
+                          className={INPUT_CLASS}
                         />
                       </div>
                       <div>
-                        <label htmlFor="admin-social-instagram" className="block text-xs font-semibold text-slate-700 mb-1">
+                        <label htmlFor="admin-social-instagram" className={LABEL_CLASS}>
                           Instagram Link
                         </label>
                         <input
@@ -2225,11 +2540,11 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                           onChange={(e) =>
                             setSocialForm({ ...socialForm, instagram: e.target.value })
                           }
-                          className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg"
+                          className={INPUT_CLASS}
                         />
                       </div>
                       <div>
-                        <label htmlFor="admin-social-facebook" className="block text-xs font-semibold text-slate-700 mb-1">
+                        <label htmlFor="admin-social-facebook" className={LABEL_CLASS}>
                           Facebook Link
                         </label>
                         <input
@@ -2239,11 +2554,11 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                           onChange={(e) =>
                             setSocialForm({ ...socialForm, facebook: e.target.value })
                           }
-                          className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg"
+                          className={INPUT_CLASS}
                         />
                       </div>
                       <div>
-                        <label htmlFor="admin-social-youtube" className="block text-xs font-semibold text-slate-700 mb-1">
+                        <label htmlFor="admin-social-youtube" className={LABEL_CLASS}>
                           YouTube Link
                         </label>
                         <input
@@ -2253,18 +2568,18 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                           onChange={(e) =>
                             setSocialForm({ ...socialForm, youtube: e.target.value })
                           }
-                          className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg"
+                          className={INPUT_CLASS}
                         />
                       </div>
                     </div>
                   </div>
 
-                  <div className="pt-4 border-t border-slate-200">
-                    <h3 className="text-sm font-bold text-slate-900 mb-3">
+                  <div className="pt-4 border-t border-zinc-800">
+                    <h3 className="text-sm font-bold text-white mb-3">
                       Homepage Hero Photo or Video (Replace or Remove Anytime)
                     </h3>
-                    <div className="flex flex-col sm:flex-row items-start gap-4 p-4 rounded-xl bg-[#FAF9F6] border border-slate-200">
-                      <div className="w-32 h-24 rounded-lg overflow-hidden border border-slate-200 bg-white shrink-0 flex items-center justify-center">
+                    <div className="flex flex-col sm:flex-row items-start gap-4 p-4 rounded-xl bg-[#0D0F14] border border-zinc-800">
+                      <div className="w-32 h-24 rounded-lg overflow-hidden border border-zinc-800 bg-[#09090B] shrink-0 flex items-center justify-center">
                         {coachingForm.heroMediaUrl ? (
                           coachingForm.heroMediaType === 'video' ||
                           isVideoFileOrUrl(coachingForm.heroMediaUrl) ? (
@@ -2289,7 +2604,7 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                       <div className="flex-1 w-full space-y-2.5">
                         <label
                           htmlFor="admin-hero-media-url"
-                          className="block text-xs font-semibold text-slate-700"
+                          className={LABEL_CLASS}
                         >
                           Hero Photo or Video URL
                         </label>
@@ -2306,10 +2621,10 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                             });
                           }}
                           placeholder="Leave blank to remove hero media, or upload/paste a photo or video URL"
-                          className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg"
+                          className={INPUT_CLASS}
                         />
                         <div className="flex flex-wrap items-center gap-2">
-                          <label className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-800 bg-white border border-slate-300 hover:bg-slate-50 rounded-lg cursor-pointer">
+                          <label className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-500 rounded-lg cursor-pointer">
                             <Upload className="w-3.5 h-3.5" aria-hidden="true" />
                             <span>
                               {uploadingFile ? 'Uploading...' : 'Upload / Replace Photo or Video'}
@@ -2344,7 +2659,7 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                                   heroMediaType: 'image',
                                 })
                               }
-                              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-red-700 bg-white border border-red-200 hover:bg-red-50 rounded-lg cursor-pointer"
+                              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-red-400 bg-[#141720] border border-red-500/40 hover:bg-red-950/40 rounded-lg cursor-pointer"
                             >
                               <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
                               <span>Remove Hero Media</span>
@@ -2358,7 +2673,7 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                   <button
                     type="submit"
                     disabled={saving || uploadingFile}
-                    className="px-5 py-2.5 text-sm font-semibold text-white bg-slate-900 hover:bg-slate-800 rounded-lg cursor-pointer"
+                    className="px-5 py-2.5 text-sm font-semibold text-white bg-blue-600 hover:bg-blue-500 rounded-lg cursor-pointer"
                   >
                     {saving ? 'Saving...' : 'Save Coaching & Social Settings'}
                   </button>
@@ -2368,8 +2683,8 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
               {/* Tab 2: Teacher Profile */}
               {activeTab === 'teacher' && teacherForm && (
                 <form onSubmit={saveTeacherProfile} className="space-y-5">
-                  <div className="flex flex-col sm:flex-row items-start gap-5 p-4 rounded-xl bg-[#FAF9F6] border border-slate-200">
-                    <div className="w-24 h-28 rounded-lg overflow-hidden border border-slate-200 shrink-0 bg-white">
+                  <div className="flex flex-col sm:flex-row items-start gap-5 p-4 rounded-xl bg-[#0D0F14] border border-zinc-800">
+                    <div className="w-24 h-28 rounded-lg overflow-hidden border border-zinc-800 shrink-0 bg-[#09090B]">
                       <ResilientImage
                         src={teacherForm.photoUrl}
                         alt={teacherForm.name}
@@ -2377,7 +2692,7 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                       />
                     </div>
                     <div className="flex-1 w-full space-y-2">
-                      <label htmlFor="admin-teacher-photo" className="block text-xs font-semibold text-slate-700">
+                      <label htmlFor="admin-teacher-photo" className={LABEL_CLASS}>
                         Teacher Photo URL or Upload Photo
                       </label>
                       <input
@@ -2388,10 +2703,10 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                           setTeacherForm({ ...teacherForm, photoUrl: e.target.value })
                         }
                         placeholder="Paste image URL, upload below, or remove photo"
-                        className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg"
+                        className={INPUT_CLASS}
                       />
                       <div className="flex flex-wrap items-center gap-2">
-                        <label className="inline-flex items-center gap-2 px-3 py-1.5 text-xs font-semibold text-slate-800 bg-white border border-slate-300 hover:bg-slate-50 rounded-lg cursor-pointer">
+                        <label className="inline-flex items-center gap-2 px-3 py-1.5 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-500 rounded-lg cursor-pointer">
                           <Upload className="w-3.5 h-3.5" aria-hidden="true" />
                           <span>{uploadingFile ? 'Uploading...' : 'Upload / Replace Photo'}</span>
                           <input
@@ -2412,7 +2727,7 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                           <button
                             type="button"
                             onClick={() => setTeacherForm({ ...teacherForm, photoUrl: '' })}
-                            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-red-700 bg-white border border-red-200 hover:bg-red-50 rounded-lg cursor-pointer"
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-red-400 bg-[#141720] border border-red-500/40 hover:bg-red-950/40 rounded-lg cursor-pointer"
                           >
                             <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
                             <span>Remove Photo</span>
@@ -2424,7 +2739,7 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
 
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div>
-                      <label htmlFor="admin-teacher-name" className="block text-xs font-semibold text-slate-700 mb-1">
+                      <label htmlFor="admin-teacher-name" className={LABEL_CLASS}>
                         Teacher Name
                       </label>
                       <input
@@ -2434,11 +2749,11 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                         onChange={(e) =>
                           setTeacherForm({ ...teacherForm, name: e.target.value })
                         }
-                        className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg"
+                        className={INPUT_CLASS}
                       />
                     </div>
                     <div>
-                      <label htmlFor="admin-teacher-role" className="block text-xs font-semibold text-slate-700 mb-1">
+                      <label htmlFor="admin-teacher-role" className={LABEL_CLASS}>
                         Role / Designation
                       </label>
                       <input
@@ -2448,11 +2763,11 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                         onChange={(e) =>
                           setTeacherForm({ ...teacherForm, roleTitle: e.target.value })
                         }
-                        className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg"
+                        className={INPUT_CLASS}
                       />
                     </div>
                     <div className="md:col-span-2">
-                      <label htmlFor="admin-teacher-intro" className="block text-xs font-semibold text-slate-700 mb-1">
+                      <label htmlFor="admin-teacher-intro" className={LABEL_CLASS}>
                         Introduction
                       </label>
                       <textarea
@@ -2462,11 +2777,11 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                         onChange={(e) =>
                           setTeacherForm({ ...teacherForm, introduction: e.target.value })
                         }
-                        className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg"
+                        className={INPUT_CLASS}
                       />
                     </div>
                     <div>
-                      <label htmlFor="admin-teacher-qualifications" className="block text-xs font-semibold text-slate-700 mb-1">
+                      <label htmlFor="admin-teacher-qualifications" className={LABEL_CLASS}>
                         Qualifications
                       </label>
                       <input
@@ -2476,11 +2791,11 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                         onChange={(e) =>
                           setTeacherForm({ ...teacherForm, qualifications: e.target.value })
                         }
-                        className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg"
+                        className={INPUT_CLASS}
                       />
                     </div>
                     <div>
-                      <label htmlFor="admin-teacher-experience" className="block text-xs font-semibold text-slate-700 mb-1">
+                      <label htmlFor="admin-teacher-experience" className={LABEL_CLASS}>
                         Teaching Experience
                       </label>
                       <input
@@ -2490,11 +2805,11 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                         onChange={(e) =>
                           setTeacherForm({ ...teacherForm, experience: e.target.value })
                         }
-                        className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg"
+                        className={INPUT_CLASS}
                       />
                     </div>
                     <div>
-                      <label htmlFor="admin-teacher-classes" className="block text-xs font-semibold text-slate-700 mb-1">
+                      <label htmlFor="admin-teacher-classes" className={LABEL_CLASS}>
                         Classes Taught
                       </label>
                       <input
@@ -2504,11 +2819,11 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                         onChange={(e) =>
                           setTeacherForm({ ...teacherForm, classesTaught: e.target.value })
                         }
-                        className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg"
+                        className={INPUT_CLASS}
                       />
                     </div>
                     <div>
-                      <label htmlFor="admin-teacher-subjects" className="block text-xs font-semibold text-slate-700 mb-1">
+                      <label htmlFor="admin-teacher-subjects" className={LABEL_CLASS}>
                         Subjects Taught (comma-separated)
                       </label>
                       <input
@@ -2516,11 +2831,11 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                         type="text"
                         value={subjectsText}
                         onChange={(e) => setSubjectsText(e.target.value)}
-                        className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg"
+                        className={INPUT_CLASS}
                       />
                     </div>
                     <div className="md:col-span-2">
-                      <label htmlFor="admin-teacher-skills" className="block text-xs font-semibold text-slate-700 mb-1">
+                      <label htmlFor="admin-teacher-skills" className={LABEL_CLASS}>
                         Teaching Skills (one per line)
                       </label>
                       <textarea
@@ -2528,7 +2843,7 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                         rows={4}
                         value={skillsText}
                         onChange={(e) => setSkillsText(e.target.value)}
-                        className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg"
+                        className={INPUT_CLASS}
                       />
                     </div>
                   </div>
@@ -2536,17 +2851,34 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                   <button
                     type="submit"
                     disabled={saving}
-                    className="px-5 py-2.5 text-sm font-semibold text-white bg-slate-900 hover:bg-slate-800 rounded-lg cursor-pointer"
+                    className="px-5 py-2.5 text-sm font-semibold text-white bg-blue-600 hover:bg-blue-500 rounded-lg cursor-pointer"
                   >
                     {saving ? 'Saving...' : 'Save Teacher Profile'}
                   </button>
                 </form>
               )}
 
-              {/* Tab 3: Photo, Video & PDF Gallery Manager */}
+              {/* Tab 3: Daily Updates Management */}
+              {activeTab === 'updates' && (
+                <AdminDailyUpdatesTab
+                  updates={adminData?.dailyUpdates || []}
+                  saving={saving}
+                  uploadingFile={uploadingFile}
+                  onUploadFile={uploadSelectedFile}
+                  onCreateUpdate={handleCreateDailyUpdate}
+                  onSaveEditUpdate={handleSaveEditDailyUpdate}
+                  onTogglePublishUpdate={handleTogglePublishDailyUpdate}
+                  onDeleteUpdate={handleDeleteDailyUpdate}
+                  onValidationError={(msg) => {
+                    setErrorMessage(msg);
+                    setErrorHint(null);
+                  }}
+                />
+              )}
+
+              {/* Tab 4: Photo, Video & PDF Gallery Manager */}
               {activeTab === 'gallery' && (
                 <div className="space-y-8">
-                  {/* Unlimited Drag & Drop + Multi-File Bulk Upload */}
                   <div
                     onDragOver={(e) => {
                       e.preventDefault();
@@ -2560,19 +2892,17 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                     }}
                     className={`p-5 rounded-xl border-2 border-dashed transition-colors space-y-3 ${
                       isGalleryDragOver
-                        ? 'bg-amber-100/80 border-amber-500'
-                        : 'bg-amber-50/60 border-amber-300'
+                        ? 'bg-blue-950/50 border-blue-500'
+                        : 'bg-[#0D0F14] border-zinc-700'
                     }`}
                   >
-                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                      <div>
-                        <h3 className="text-sm font-bold text-slate-950">
-                          Unlimited Upload Zone (Photos, Videos &amp; PDFs)
-                        </h3>
-                        <p className="text-xs text-slate-600 mt-0.5">
-                          Drag &amp; drop or select as many photos, videos, or PDFs as you want at once — everything saves &amp; publishes automatically.
-                        </p>
-                      </div>
+                    <div>
+                      <h3 className="text-sm font-bold text-white">
+                        Unlimited Upload Zone (Photos, Videos &amp; PDFs)
+                      </h3>
+                      <p className="text-xs text-slate-400 mt-0.5">
+                        Drag &amp; drop or select as many photos, videos, or PDFs as you want at once — everything saves &amp; publishes automatically.
+                      </p>
                     </div>
 
                     <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
@@ -2584,7 +2914,7 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                           id="admin-bulk-gal-cat"
                           value={bulkGalleryCategory}
                           onChange={(e) => setBulkGalleryCategory(e.target.value as GalleryCategory)}
-                          className="w-full px-3 py-2 text-xs sm:text-sm bg-white border border-slate-300 rounded-lg"
+                          className={INPUT_CLASS}
                         >
                           <option value="coaching">Photos → Coaching Photos</option>
                           <option value="classroom">Photos → Classroom Photos</option>
@@ -2593,7 +2923,7 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                         </select>
                       </div>
 
-                      <label className="inline-flex items-center justify-center gap-2 px-4 py-2 text-xs sm:text-sm font-semibold text-white bg-slate-900 hover:bg-slate-800 rounded-lg cursor-pointer shrink-0">
+                      <label className="inline-flex items-center justify-center gap-2 px-4 py-2 text-xs sm:text-sm font-semibold text-white bg-blue-600 hover:bg-blue-500 rounded-lg cursor-pointer shrink-0">
                         <Upload className="w-4 h-4" aria-hidden="true" />
                         <span>
                           {bulkUploadProgress
@@ -2618,20 +2948,20 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
 
                   <form
                     onSubmit={saveNewGalleryItem}
-                    className="p-5 rounded-xl bg-[#FAF9F6] border border-slate-200 space-y-4"
+                    className="p-5 rounded-xl bg-[#0D0F14] border border-zinc-800 space-y-4"
                   >
                     <div>
-                      <h3 className="text-sm font-bold text-slate-950">
+                      <h3 className="text-sm font-bold text-white">
                         Add Single Gallery Item (by URL or File)
                       </h3>
-                      <p className="text-xs text-slate-500 mt-0.5">
+                      <p className="text-xs text-slate-400 mt-0.5">
                         Add a YouTube link, external URL, or single photo/video/PDF with custom title and caption.
                       </p>
                     </div>
 
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                       <div>
-                        <label htmlFor="admin-gal-title" className="block text-xs font-semibold text-slate-700 mb-1">
+                        <label htmlFor="admin-gal-title" className={LABEL_CLASS}>
                           Title
                         </label>
                         <input
@@ -2640,12 +2970,12 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                           value={galTitle}
                           onChange={(e) => setGalTitle(e.target.value)}
                           placeholder="e.g. Science Quiz Activity or Class 10 Notes PDF"
-                          className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg"
+                          className={INPUT_CLASS}
                         />
                       </div>
 
                       <div>
-                        <label htmlFor="admin-gal-category" className="block text-xs font-semibold text-slate-700 mb-1">
+                        <label htmlFor="admin-gal-category" className={LABEL_CLASS}>
                           Category
                         </label>
                         <select
@@ -2658,7 +2988,7 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                               cat === 'pdfs' ? 'pdf' : cat === 'videos' ? 'video' : 'image',
                             );
                           }}
-                          className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg"
+                          className={INPUT_CLASS}
                         >
                           <option value="coaching">Coaching Photos</option>
                           <option value="classroom">Classroom Photos</option>
@@ -2670,7 +3000,7 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                       </div>
 
                       <div className="md:col-span-2">
-                        <label htmlFor="admin-gal-url" className="block text-xs font-semibold text-slate-700 mb-1">
+                        <label htmlFor="admin-gal-url" className={LABEL_CLASS}>
                           Media URL (Photo, Video, YouTube Link, or PDF File)
                         </label>
                         <div className="flex flex-col sm:flex-row gap-2">
@@ -2680,9 +3010,9 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                             value={galMediaUrl}
                             onChange={(e) => setGalMediaUrl(e.target.value)}
                             placeholder="https://... or upload a photo, video, or PDF"
-                            className="flex-1 px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg"
+                            className={`flex-1 ${INPUT_CLASS}`}
                           />
-                          <label className="inline-flex items-center justify-center gap-2 px-4 py-2 text-xs font-semibold text-slate-800 bg-white border border-slate-300 hover:bg-slate-50 rounded-lg cursor-pointer shrink-0">
+                          <label className="inline-flex items-center justify-center gap-2 px-4 py-2 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-500 rounded-lg cursor-pointer shrink-0">
                             <Upload className="w-3.5 h-3.5" aria-hidden="true" />
                             <span>{uploadingFile ? 'Uploading...' : 'Upload Photo / Video / PDF'}</span>
                             <input
@@ -2715,7 +3045,7 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                       </div>
 
                       <div className="md:col-span-2">
-                        <label htmlFor="admin-gal-caption" className="block text-xs font-semibold text-slate-700 mb-1">
+                        <label htmlFor="admin-gal-caption" className={LABEL_CLASS}>
                           Caption
                         </label>
                         <input
@@ -2724,13 +3054,13 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                           value={galCaption}
                           onChange={(e) => setGalCaption(e.target.value)}
                           placeholder="Short description shown below the photo, video, or PDF"
-                          className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg"
+                          className={INPUT_CLASS}
                         />
                       </div>
 
                       {galCategory === 'videos' && (
                         <div className="md:col-span-2">
-                          <label htmlFor="admin-gal-thumb" className="block text-xs font-semibold text-slate-700 mb-1">
+                          <label htmlFor="admin-gal-thumb" className={LABEL_CLASS}>
                             Video Thumbnail Image URL (Optional)
                           </label>
                           <input
@@ -2739,19 +3069,19 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                             value={galThumbUrl}
                             onChange={(e) => setGalThumbUrl(e.target.value)}
                             placeholder="Optional thumbnail URL for video cards"
-                            className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg"
+                            className={INPUT_CLASS}
                           />
                         </div>
                       )}
                     </div>
 
                     <div className="flex flex-wrap items-center justify-between gap-4 pt-2">
-                      <label className="inline-flex items-center gap-2 text-sm font-medium text-slate-800 cursor-pointer">
+                      <label className="inline-flex items-center gap-2 text-sm font-medium text-slate-200 cursor-pointer">
                         <input
                           type="checkbox"
                           checked={galPublished}
                           onChange={(e) => setGalPublished(e.target.checked)}
-                          className="w-4 h-4 rounded border-slate-300"
+                          className="w-4 h-4 rounded border-zinc-700 bg-[#09090B]"
                         />
                         <span>Publish immediately on public gallery</span>
                       </label>
@@ -2759,7 +3089,7 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                       <button
                         type="submit"
                         disabled={saving || uploadingFile}
-                        className="inline-flex items-center gap-1.5 px-5 py-2 text-sm font-semibold text-white bg-slate-900 hover:bg-slate-800 rounded-lg cursor-pointer"
+                        className="inline-flex items-center gap-1.5 px-5 py-2 text-sm font-semibold text-white bg-blue-600 hover:bg-blue-500 rounded-lg cursor-pointer"
                       >
                         <Plus className="w-4 h-4" aria-hidden="true" />
                         <span>Add to Gallery</span>
@@ -2782,7 +3112,7 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                     return (
                       <div className="space-y-3">
                         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                          <h3 className="text-sm font-bold text-slate-900">
+                          <h3 className="text-sm font-bold text-white">
                             All Gallery Items ({filteredGallery.length} of {allGallery.length})
                           </h3>
                           <div className="relative sm:w-64">
@@ -2797,7 +3127,7 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                               onChange={(e) => setGalSearchQuery(e.target.value)}
                               placeholder="Search photos, videos, PDFs..."
                               aria-label="Search gallery items"
-                              className="w-full pl-8 pr-3 py-1.5 text-xs sm:text-sm bg-white border border-slate-300 rounded-lg"
+                              className="w-full pl-8 pr-3 py-1.5 text-xs sm:text-sm bg-[#09090B] border border-zinc-700 rounded-lg text-slate-100 placeholder:text-slate-500"
                             />
                           </div>
                         </div>
@@ -2817,8 +3147,8 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                               onClick={() => setGalFilterType(tabBtn.id)}
                               className={`px-3 py-1.5 text-xs font-semibold rounded-lg border transition-colors cursor-pointer ${
                                 galFilterType === tabBtn.id
-                                  ? 'bg-slate-900 text-white border-slate-900'
-                                  : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'
+                                  ? 'bg-blue-600 text-white border-blue-500'
+                                  : 'bg-[#0D0F14] text-slate-300 border-zinc-800 hover:border-zinc-700'
                               }`}
                             >
                               {tabBtn.label}
@@ -2827,11 +3157,11 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                         </div>
 
                         {filteredGallery.length === 0 ? (
-                          <div className="p-6 rounded-xl border border-slate-200 bg-[#FAF9F6] text-center text-sm text-slate-600">
+                          <div className="p-6 rounded-xl border border-zinc-800 bg-[#0D0F14] text-center text-sm text-slate-400">
                             No gallery items match this filter or search query.
                           </div>
                         ) : (
-                          <div className="divide-y divide-slate-200 border border-slate-200 rounded-xl overflow-hidden">
+                          <div className="divide-y divide-zinc-800 border border-zinc-800 rounded-xl overflow-hidden">
                             {filteredGallery.map((item) => {
                               const itemIsPdf =
                                 item.mediaType === 'pdf' ||
@@ -2845,14 +3175,14 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                               const isEditingThis = inlineGalId === item.id;
 
                               return (
-                                <div key={item.id} className="bg-white">
+                                <div key={item.id} className="bg-[#111318]">
                                   <div className="p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                                     <div className="flex items-center gap-3 min-w-0">
-                                      <div className="w-16 h-12 rounded-lg overflow-hidden border border-slate-200 bg-slate-100 shrink-0 flex items-center justify-center">
+                                      <div className="w-16 h-12 rounded-lg overflow-hidden border border-zinc-800 bg-[#09090B] shrink-0 flex items-center justify-center">
                                         {itemIsPdf ? (
-                                          <FileText className="w-6 h-6 text-amber-700" aria-hidden="true" />
+                                          <FileText className="w-6 h-6 text-red-400" aria-hidden="true" />
                                         ) : itemIsVideo && !item.thumbnailUrl ? (
-                                          <Film className="w-6 h-6 text-slate-700" aria-hidden="true" />
+                                          <Film className="w-6 h-6 text-blue-400" aria-hidden="true" />
                                         ) : (
                                           <ResilientImage
                                             src={item.thumbnailUrl || item.mediaUrl}
@@ -2862,10 +3192,10 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                                         )}
                                       </div>
                                       <div className="min-w-0">
-                                        <div className="text-sm font-bold text-slate-950 truncate">
+                                        <div className="text-sm font-bold text-white truncate">
                                           {item.title}
                                         </div>
-                                        <div className="text-xs text-slate-500">
+                                        <div className="text-xs text-slate-400">
                                           {item.category} · {item.published ? 'Published' : 'Draft'}
                                         </div>
                                       </div>
@@ -2874,7 +3204,7 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                                     <div className="flex flex-wrap items-center gap-2 shrink-0">
                                       <label
                                         aria-label={`Replace file for ${item.title}`}
-                                        className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold text-slate-800 border border-slate-300 rounded-lg hover:bg-slate-50 cursor-pointer"
+                                        className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold text-slate-200 border border-zinc-700 rounded-lg hover:bg-zinc-800 cursor-pointer"
                                       >
                                         <RefreshCw className="w-3.5 h-3.5" aria-hidden="true" />
                                         <span>Replace</span>
@@ -2896,7 +3226,7 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                                         type="button"
                                         onClick={() => void toggleGalleryPublish(item)}
                                         aria-label={`${item.published ? 'Unpublish' : 'Publish'} ${item.title}`}
-                                        className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold border border-slate-300 rounded-lg hover:bg-slate-50 cursor-pointer"
+                                        className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold text-slate-200 border border-zinc-700 rounded-lg hover:bg-zinc-800 cursor-pointer"
                                       >
                                         {item.published ? (
                                           <>
@@ -2917,8 +3247,8 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                                         aria-label={`Edit ${item.title}`}
                                         className={`inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold border rounded-lg cursor-pointer ${
                                           isEditingThis
-                                            ? 'bg-slate-900 text-white border-slate-900'
-                                            : 'border-slate-300 hover:bg-slate-50'
+                                            ? 'bg-blue-600 text-white border-blue-500'
+                                            : 'text-slate-200 border-zinc-700 hover:bg-zinc-800'
                                         }`}
                                       >
                                         <Edit3 className="w-3.5 h-3.5" aria-hidden="true" />
@@ -2929,7 +3259,7 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                                         type="button"
                                         onClick={() => void deleteGalleryItem(item.id)}
                                         aria-label={`Delete ${item.title}`}
-                                        className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold text-red-700 border border-red-200 hover:bg-red-50 rounded-lg cursor-pointer"
+                                        className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold text-red-400 border border-red-500/40 hover:bg-red-950/40 rounded-lg cursor-pointer"
                                       >
                                         <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
                                         <span>Delete</span>
@@ -2938,12 +3268,12 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                                   </div>
 
                                   {isEditingThis && (
-                                    <div className="px-4 pb-4 pt-3 border-t border-slate-100 bg-[#FAF9F6] space-y-3">
+                                    <div className="px-4 pb-4 pt-3 border-t border-zinc-800 bg-[#0D0F14] space-y-3">
                                       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                                         <div>
                                           <label
                                             htmlFor={`inline-gal-title-${item.id}`}
-                                            className="block text-xs font-semibold text-slate-700 mb-1"
+                                            className={LABEL_CLASS}
                                           >
                                             Title
                                           </label>
@@ -2952,14 +3282,14 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                                             type="text"
                                             value={inlineGalTitle}
                                             onChange={(e) => setInlineGalTitle(e.target.value)}
-                                            className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg"
+                                            className={INPUT_CLASS}
                                           />
                                         </div>
 
                                         <div>
                                           <label
                                             htmlFor={`inline-gal-cat-${item.id}`}
-                                            className="block text-xs font-semibold text-slate-700 mb-1"
+                                            className={LABEL_CLASS}
                                           >
                                             Category
                                           </label>
@@ -2973,7 +3303,7 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                                                 cat === 'pdfs' ? 'pdf' : cat === 'videos' ? 'video' : 'image',
                                               );
                                             }}
-                                            className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg"
+                                            className={INPUT_CLASS}
                                           >
                                             <option value="coaching">Coaching Photos</option>
                                             <option value="classroom">Classroom Photos</option>
@@ -2987,7 +3317,7 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                                         <div className="md:col-span-2">
                                           <label
                                             htmlFor={`inline-gal-url-${item.id}`}
-                                            className="block text-xs font-semibold text-slate-700 mb-1"
+                                            className={LABEL_CLASS}
                                           >
                                             Media URL / Uploaded File
                                           </label>
@@ -2997,9 +3327,9 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                                               type="text"
                                               value={inlineGalMediaUrl}
                                               onChange={(e) => setInlineGalMediaUrl(e.target.value)}
-                                              className="flex-1 px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg"
+                                              className={`flex-1 ${INPUT_CLASS}`}
                                             />
-                                            <label className="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-semibold text-slate-800 bg-white border border-slate-300 hover:bg-slate-50 rounded-lg cursor-pointer shrink-0">
+                                            <label className="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-500 rounded-lg cursor-pointer shrink-0">
                                               <Upload className="w-3.5 h-3.5" aria-hidden="true" />
                                               <span>{uploadingFile ? 'Uploading...' : 'Replace File'}</span>
                                               <input
@@ -3034,7 +3364,7 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                                         <div className="md:col-span-2">
                                           <label
                                             htmlFor={`inline-gal-caption-${item.id}`}
-                                            className="block text-xs font-semibold text-slate-700 mb-1"
+                                            className={LABEL_CLASS}
                                           >
                                             Caption
                                           </label>
@@ -3043,7 +3373,7 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                                             type="text"
                                             value={inlineGalCaption}
                                             onChange={(e) => setInlineGalCaption(e.target.value)}
-                                            className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg"
+                                            className={INPUT_CLASS}
                                           />
                                         </div>
 
@@ -3051,7 +3381,7 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                                           <div className="md:col-span-2">
                                             <label
                                               htmlFor={`inline-gal-thumb-${item.id}`}
-                                              className="block text-xs font-semibold text-slate-700 mb-1"
+                                              className={LABEL_CLASS}
                                             >
                                               Video Thumbnail URL (Optional)
                                             </label>
@@ -3060,19 +3390,19 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                                               type="text"
                                               value={inlineGalThumbUrl}
                                               onChange={(e) => setInlineGalThumbUrl(e.target.value)}
-                                              className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg"
+                                              className={INPUT_CLASS}
                                             />
                                           </div>
                                         )}
                                       </div>
 
                                       <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
-                                        <label className="inline-flex items-center gap-2 text-xs font-medium text-slate-800 cursor-pointer">
+                                        <label className="inline-flex items-center gap-2 text-xs font-medium text-slate-200 cursor-pointer">
                                           <input
                                             type="checkbox"
                                             checked={inlineGalPublished}
                                             onChange={(e) => setInlineGalPublished(e.target.checked)}
-                                            className="w-4 h-4 rounded border-slate-300"
+                                            className="w-4 h-4 rounded border-zinc-700 bg-[#09090B]"
                                           />
                                           <span>Published on gallery</span>
                                         </label>
@@ -3081,7 +3411,7 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                                           <button
                                             type="button"
                                             onClick={() => setInlineGalId(null)}
-                                            className="px-3.5 py-1.5 text-xs font-semibold text-slate-700 bg-white border border-slate-300 hover:bg-slate-50 rounded-lg cursor-pointer"
+                                            className="px-3.5 py-1.5 text-xs font-semibold text-slate-300 bg-[#141720] border border-zinc-700 hover:bg-zinc-800 rounded-lg cursor-pointer"
                                           >
                                             Cancel
                                           </button>
@@ -3089,7 +3419,7 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                                             type="button"
                                             disabled={saving || uploadingFile}
                                             onClick={() => void saveInlineGalleryEdit(item.id)}
-                                            className="px-4 py-1.5 text-xs font-semibold text-white bg-slate-900 hover:bg-slate-800 rounded-lg cursor-pointer"
+                                            className="px-4 py-1.5 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-500 rounded-lg cursor-pointer"
                                           >
                                             {saving ? 'Saving...' : 'Save Changes'}
                                           </button>
@@ -3108,10 +3438,9 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                 </div>
               )}
 
-              {/* Tab 4: Learning Hub & PDFs Manager */}
+              {/* Tab 5: Learning Hub & PDFs Manager */}
               {activeTab === 'hub' && (
                 <div className="space-y-8">
-                  {/* Unlimited Drag & Drop + Multi-PDF Bulk Upload */}
                   <div
                     onDragOver={(e) => {
                       e.preventDefault();
@@ -3125,15 +3454,15 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                     }}
                     className={`p-5 rounded-xl border-2 border-dashed transition-colors space-y-3 ${
                       isHubDragOver
-                        ? 'bg-amber-100/80 border-amber-500'
-                        : 'bg-amber-50/60 border-amber-300'
+                        ? 'bg-blue-950/50 border-blue-500'
+                        : 'bg-[#0D0F14] border-zinc-700'
                     }`}
                   >
                     <div>
-                      <h3 className="text-sm font-bold text-slate-950">
+                      <h3 className="text-sm font-bold text-white">
                         Unlimited Drag &amp; Drop Study PDFs
                       </h3>
-                      <p className="text-xs text-slate-600 mt-0.5">
+                      <p className="text-xs text-slate-400 mt-0.5">
                         Drag &amp; drop or select as many PDF files as you want at once — each PDF becomes a viewable &amp; downloadable card in Learning Hub.
                       </p>
                     </div>
@@ -3148,10 +3477,10 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                           value={bulkPdfTopic}
                           onChange={(e) => setBulkPdfTopic(e.target.value)}
                           placeholder="Topic Area (e.g. Mathematics)"
-                          className="w-full px-3 py-2 text-xs sm:text-sm bg-white border border-slate-300 rounded-lg"
+                          className={INPUT_CLASS}
                         />
                       </div>
-                      <label className="inline-flex items-center justify-center gap-2 px-4 py-2 text-xs sm:text-sm font-semibold text-white bg-slate-900 hover:bg-slate-800 rounded-lg cursor-pointer shrink-0">
+                      <label className="inline-flex items-center justify-center gap-2 px-4 py-2 text-xs sm:text-sm font-semibold text-white bg-blue-600 hover:bg-blue-500 rounded-lg cursor-pointer shrink-0">
                         <FileText className="w-4 h-4" aria-hidden="true" />
                         <span>
                           {bulkUploadProgress
@@ -3176,20 +3505,20 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
 
                   <form
                     onSubmit={saveNewHubResource}
-                    className="p-5 rounded-xl bg-[#FAF9F6] border border-slate-200 space-y-4"
+                    className="p-5 rounded-xl bg-[#0D0F14] border border-zinc-800 space-y-4"
                   >
                     <div>
-                      <h3 className="text-sm font-bold text-slate-950">
+                      <h3 className="text-sm font-bold text-white">
                         Add Study Guide or PDF to Learning Hub
                       </h3>
-                      <p className="text-xs text-slate-500 mt-0.5">
+                      <p className="text-xs text-slate-400 mt-0.5">
                         Create a detailed study note or attach a single PDF with custom summary &amp; formulas.
                       </p>
                     </div>
 
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                       <div>
-                        <label htmlFor="admin-hub-title" className="block text-xs font-semibold text-slate-700 mb-1">
+                        <label htmlFor="admin-hub-title" className={LABEL_CLASS}>
                           Title
                         </label>
                         <input
@@ -3198,11 +3527,11 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                           value={hubTitle}
                           onChange={(e) => setHubTitle(e.target.value)}
                           placeholder="e.g. Trigonometry Ratios Sheet"
-                          className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg"
+                          className={INPUT_CLASS}
                         />
                       </div>
                       <div>
-                        <label htmlFor="admin-hub-topic" className="block text-xs font-semibold text-slate-700 mb-1">
+                        <label htmlFor="admin-hub-topic" className={LABEL_CLASS}>
                           Topic Area
                         </label>
                         <input
@@ -3211,11 +3540,11 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                           value={hubTopic}
                           onChange={(e) => setHubTopic(e.target.value)}
                           placeholder="e.g. Mathematics"
-                          className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg"
+                          className={INPUT_CLASS}
                         />
                       </div>
                       <div className="md:col-span-2">
-                        <label htmlFor="admin-hub-pdf" className="block text-xs font-semibold text-slate-700 mb-1">
+                        <label htmlFor="admin-hub-pdf" className={LABEL_CLASS}>
                           Attach Study PDF (Optional)
                         </label>
                         <div className="flex flex-col sm:flex-row gap-2">
@@ -3225,9 +3554,9 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                             value={hubPdfUrl}
                             onChange={(e) => setHubPdfUrl(e.target.value)}
                             placeholder="Upload a PDF or paste PDF URL"
-                            className="flex-1 px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg"
+                            className={`flex-1 ${INPUT_CLASS}`}
                           />
-                          <label className="inline-flex items-center justify-center gap-2 px-4 py-2 text-xs font-semibold text-slate-800 bg-white border border-slate-300 hover:bg-slate-50 rounded-lg cursor-pointer shrink-0">
+                          <label className="inline-flex items-center justify-center gap-2 px-4 py-2 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-500 rounded-lg cursor-pointer shrink-0">
                             <Upload className="w-3.5 h-3.5" aria-hidden="true" />
                             <span>{uploadingFile ? 'Uploading...' : 'Upload PDF'}</span>
                             <input
@@ -3255,7 +3584,7 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                                 setHubPdfUrl('');
                                 setHubPdfName('');
                               }}
-                              className="inline-flex items-center justify-center gap-1 px-3 py-2 text-xs font-semibold text-red-700 bg-white border border-red-200 hover:bg-red-50 rounded-lg cursor-pointer shrink-0"
+                              className="inline-flex items-center justify-center gap-1 px-3 py-2 text-xs font-semibold text-red-400 bg-[#141720] border border-red-500/40 hover:bg-red-950/40 rounded-lg cursor-pointer shrink-0"
                             >
                               <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
                               <span>Remove PDF</span>
@@ -3264,7 +3593,7 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                         </div>
                       </div>
                       <div className="md:col-span-2">
-                        <label htmlFor="admin-hub-summary" className="block text-xs font-semibold text-slate-700 mb-1">
+                        <label htmlFor="admin-hub-summary" className={LABEL_CLASS}>
                           Short Summary
                         </label>
                         <input
@@ -3273,11 +3602,11 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                           value={hubSummary}
                           onChange={(e) => setHubSummary(e.target.value)}
                           placeholder="1-sentence overview shown on the Learning Hub card"
-                          className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg"
+                          className={INPUT_CLASS}
                         />
                       </div>
                       <div className="md:col-span-2">
-                        <label htmlFor="admin-hub-content" className="block text-xs font-semibold text-slate-700 mb-1">
+                        <label htmlFor="admin-hub-content" className={LABEL_CLASS}>
                           Full Study Notes (Hindi + English)
                         </label>
                         <textarea
@@ -3285,11 +3614,11 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                           rows={4}
                           value={hubContent}
                           onChange={(e) => setHubContent(e.target.value)}
-                          className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg"
+                          className={INPUT_CLASS}
                         />
                       </div>
                       <div>
-                        <label htmlFor="admin-hub-lang" className="block text-xs font-semibold text-slate-700 mb-1">
+                        <label htmlFor="admin-hub-lang" className={LABEL_CLASS}>
                           Language Note
                         </label>
                         <input
@@ -3297,11 +3626,11 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                           type="text"
                           value={hubLang}
                           onChange={(e) => setHubLang(e.target.value)}
-                          className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg"
+                          className={INPUT_CLASS}
                         />
                       </div>
                       <div>
-                        <label htmlFor="admin-hub-formulas" className="block text-xs font-semibold text-slate-700 mb-1">
+                        <label htmlFor="admin-hub-formulas" className={LABEL_CLASS}>
                           Key Formulas (one per line)
                         </label>
                         <textarea
@@ -3309,18 +3638,18 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                           rows={2}
                           value={hubFormulasText}
                           onChange={(e) => setHubFormulasText(e.target.value)}
-                          className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg"
+                          className={INPUT_CLASS}
                         />
                       </div>
                     </div>
 
                     <div className="flex flex-wrap items-center justify-between gap-4">
-                      <label className="inline-flex items-center gap-2 text-sm font-medium text-slate-800 cursor-pointer">
+                      <label className="inline-flex items-center gap-2 text-sm font-medium text-slate-200 cursor-pointer">
                         <input
                           type="checkbox"
                           checked={hubPublished}
                           onChange={(e) => setHubPublished(e.target.checked)}
-                          className="w-4 h-4 rounded border-slate-300"
+                          className="w-4 h-4 rounded border-zinc-700 bg-[#09090B]"
                         />
                         <span>Publish on Learning Hub</span>
                       </label>
@@ -3328,7 +3657,7 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                       <button
                         type="submit"
                         disabled={saving || uploadingFile}
-                        className="inline-flex items-center gap-1.5 px-5 py-2 text-sm font-semibold text-white bg-slate-900 hover:bg-slate-800 rounded-lg cursor-pointer"
+                        className="inline-flex items-center gap-1.5 px-5 py-2 text-sm font-semibold text-white bg-blue-600 hover:bg-blue-500 rounded-lg cursor-pointer"
                       >
                         <Plus className="w-4 h-4" aria-hidden="true" />
                         <span>Add Study Guide</span>
@@ -3343,7 +3672,7 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                     return (
                       <div className="space-y-3">
                         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                          <h3 className="text-sm font-bold text-slate-900">
+                          <h3 className="text-sm font-bold text-white">
                             All Learning Hub Resources ({filteredHub.length} of {allHub.length})
                           </h3>
                           <div className="relative sm:w-64">
@@ -3358,34 +3687,34 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                               onChange={(e) => setHubSearchQuery(e.target.value)}
                               placeholder="Search study notes or PDFs..."
                               aria-label="Search learning hub items"
-                              className="w-full pl-8 pr-3 py-1.5 text-xs sm:text-sm bg-white border border-slate-300 rounded-lg"
+                              className="w-full pl-8 pr-3 py-1.5 text-xs sm:text-sm bg-[#09090B] border border-zinc-700 rounded-lg text-slate-100 placeholder:text-slate-500"
                             />
                           </div>
                         </div>
 
                         {filteredHub.length === 0 ? (
-                          <div className="p-6 rounded-xl border border-slate-200 bg-[#FAF9F6] text-center text-sm text-slate-600">
+                          <div className="p-6 rounded-xl border border-zinc-800 bg-[#0D0F14] text-center text-sm text-slate-400">
                             No study guides or PDFs match your search.
                           </div>
                         ) : (
-                          <div className="divide-y divide-slate-200 border border-slate-200 rounded-xl overflow-hidden">
+                          <div className="divide-y divide-zinc-800 border border-zinc-800 rounded-xl overflow-hidden">
                             {filteredHub.map((resItem) => {
                               const isEditingThis = inlineHubId === resItem.id;
                               return (
-                                <div key={resItem.id} className="bg-white">
+                                <div key={resItem.id} className="bg-[#111318]">
                                   <div className="p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                                     <div>
                                       <div className="flex items-center gap-2">
-                                        <span className="text-sm font-bold text-slate-950">
+                                        <span className="text-sm font-bold text-white">
                                           {resItem.title}
                                         </span>
                                         {resItem.pdfUrl && (
-                                          <span className="text-[11px] font-mono font-semibold text-amber-800 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded">
+                                          <span className="text-[11px] font-mono font-semibold text-red-400 bg-red-500/10 border border-red-500/30 px-1.5 py-0.5 rounded">
                                             PDF
                                           </span>
                                         )}
                                       </div>
-                                      <div className="text-xs text-slate-500">
+                                      <div className="text-xs text-slate-400">
                                         {resItem.topicArea} · {resItem.published ? 'Published' : 'Draft'}
                                       </div>
                                     </div>
@@ -3394,7 +3723,7 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                                         type="button"
                                         onClick={() => void toggleHubPublish(resItem)}
                                         aria-label={`${resItem.published ? 'Unpublish' : 'Publish'} ${resItem.title}`}
-                                        className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold border border-slate-300 rounded-lg hover:bg-slate-50 cursor-pointer"
+                                        className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold text-slate-200 border border-zinc-700 rounded-lg hover:bg-zinc-800 cursor-pointer"
                                       >
                                         {resItem.published ? (
                                           <>
@@ -3414,8 +3743,8 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                                         aria-label={`Edit ${resItem.title}`}
                                         className={`inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold border rounded-lg cursor-pointer ${
                                           isEditingThis
-                                            ? 'bg-slate-900 text-white border-slate-900'
-                                            : 'border-slate-300 hover:bg-slate-50'
+                                            ? 'bg-blue-600 text-white border-blue-500'
+                                            : 'text-slate-200 border-zinc-700 hover:bg-zinc-800'
                                         }`}
                                       >
                                         <Edit3 className="w-3.5 h-3.5" aria-hidden="true" />
@@ -3425,7 +3754,7 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                                         type="button"
                                         onClick={() => void deleteHubResource(resItem.id)}
                                         aria-label={`Delete ${resItem.title}`}
-                                        className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold text-red-700 border border-red-200 hover:bg-red-50 rounded-lg cursor-pointer"
+                                        className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold text-red-400 border border-red-500/40 hover:bg-red-950/40 rounded-lg cursor-pointer"
                                       >
                                         <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
                                         <span>Delete</span>
@@ -3434,12 +3763,12 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                                   </div>
 
                                   {isEditingThis && (
-                                    <div className="px-4 pb-4 pt-3 border-t border-slate-100 bg-[#FAF9F6] space-y-3">
+                                    <div className="px-4 pb-4 pt-3 border-t border-zinc-800 bg-[#0D0F14] space-y-3">
                                       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                                         <div>
                                           <label
                                             htmlFor={`inline-hub-title-${resItem.id}`}
-                                            className="block text-xs font-semibold text-slate-700 mb-1"
+                                            className={LABEL_CLASS}
                                           >
                                             Title
                                           </label>
@@ -3448,13 +3777,13 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                                             type="text"
                                             value={inlineHubTitle}
                                             onChange={(e) => setInlineHubTitle(e.target.value)}
-                                            className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg"
+                                            className={INPUT_CLASS}
                                           />
                                         </div>
                                         <div>
                                           <label
                                             htmlFor={`inline-hub-topic-${resItem.id}`}
-                                            className="block text-xs font-semibold text-slate-700 mb-1"
+                                            className={LABEL_CLASS}
                                           >
                                             Topic Area
                                           </label>
@@ -3463,13 +3792,13 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                                             type="text"
                                             value={inlineHubTopic}
                                             onChange={(e) => setInlineHubTopic(e.target.value)}
-                                            className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg"
+                                            className={INPUT_CLASS}
                                           />
                                         </div>
                                         <div className="md:col-span-2">
                                           <label
                                             htmlFor={`inline-hub-pdf-${resItem.id}`}
-                                            className="block text-xs font-semibold text-slate-700 mb-1"
+                                            className={LABEL_CLASS}
                                           >
                                             PDF File / URL (Optional)
                                           </label>
@@ -3479,9 +3808,9 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                                               type="text"
                                               value={inlineHubPdfUrl}
                                               onChange={(e) => setInlineHubPdfUrl(e.target.value)}
-                                              className="flex-1 px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg"
+                                              className={`flex-1 ${INPUT_CLASS}`}
                                             />
-                                            <label className="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-semibold text-slate-800 bg-white border border-slate-300 hover:bg-slate-50 rounded-lg cursor-pointer shrink-0">
+                                            <label className="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-500 rounded-lg cursor-pointer shrink-0">
                                               <Upload className="w-3.5 h-3.5" aria-hidden="true" />
                                               <span>
                                                 {uploadingFile
@@ -3512,7 +3841,7 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                                                   setInlineHubPdfUrl('');
                                                   setInlineHubPdfName('');
                                                 }}
-                                                className="inline-flex items-center justify-center gap-1 px-3 py-2 text-xs font-semibold text-red-700 bg-white border border-red-200 hover:bg-red-50 rounded-lg cursor-pointer shrink-0"
+                                                className="inline-flex items-center justify-center gap-1 px-3 py-2 text-xs font-semibold text-red-400 bg-[#141720] border border-red-500/40 hover:bg-red-950/40 rounded-lg cursor-pointer shrink-0"
                                               >
                                                 <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
                                                 <span>Remove PDF</span>
@@ -3523,7 +3852,7 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                                         <div className="md:col-span-2">
                                           <label
                                             htmlFor={`inline-hub-summary-${resItem.id}`}
-                                            className="block text-xs font-semibold text-slate-700 mb-1"
+                                            className={LABEL_CLASS}
                                           >
                                             Short Summary
                                           </label>
@@ -3532,13 +3861,13 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                                             type="text"
                                             value={inlineHubSummary}
                                             onChange={(e) => setInlineHubSummary(e.target.value)}
-                                            className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg"
+                                            className={INPUT_CLASS}
                                           />
                                         </div>
                                         <div className="md:col-span-2">
                                           <label
                                             htmlFor={`inline-hub-content-${resItem.id}`}
-                                            className="block text-xs font-semibold text-slate-700 mb-1"
+                                            className={LABEL_CLASS}
                                           >
                                             Full Study Notes (Hindi + English)
                                           </label>
@@ -3547,13 +3876,13 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                                             rows={3}
                                             value={inlineHubContent}
                                             onChange={(e) => setInlineHubContent(e.target.value)}
-                                            className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg"
+                                            className={INPUT_CLASS}
                                           />
                                         </div>
                                         <div>
                                           <label
                                             htmlFor={`inline-hub-lang-${resItem.id}`}
-                                            className="block text-xs font-semibold text-slate-700 mb-1"
+                                            className={LABEL_CLASS}
                                           >
                                             Language Note
                                           </label>
@@ -3562,13 +3891,13 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                                             type="text"
                                             value={inlineHubLang}
                                             onChange={(e) => setInlineHubLang(e.target.value)}
-                                            className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg"
+                                            className={INPUT_CLASS}
                                           />
                                         </div>
                                         <div>
                                           <label
                                             htmlFor={`inline-hub-formulas-${resItem.id}`}
-                                            className="block text-xs font-semibold text-slate-700 mb-1"
+                                            className={LABEL_CLASS}
                                           >
                                             Key Formulas (one per line)
                                           </label>
@@ -3577,18 +3906,18 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                                             rows={2}
                                             value={inlineHubFormulasText}
                                             onChange={(e) => setInlineHubFormulasText(e.target.value)}
-                                            className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg"
+                                            className={INPUT_CLASS}
                                           />
                                         </div>
                                       </div>
 
                                       <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
-                                        <label className="inline-flex items-center gap-2 text-xs font-medium text-slate-800 cursor-pointer">
+                                        <label className="inline-flex items-center gap-2 text-xs font-medium text-slate-200 cursor-pointer">
                                           <input
                                             type="checkbox"
                                             checked={inlineHubPublished}
                                             onChange={(e) => setInlineHubPublished(e.target.checked)}
-                                            className="w-4 h-4 rounded border-slate-300"
+                                            className="w-4 h-4 rounded border-zinc-700 bg-[#09090B]"
                                           />
                                           <span>Published on Learning Hub</span>
                                         </label>
@@ -3597,7 +3926,7 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                                           <button
                                             type="button"
                                             onClick={() => setInlineHubId(null)}
-                                            className="px-3.5 py-1.5 text-xs font-semibold text-slate-700 bg-white border border-slate-300 hover:bg-slate-50 rounded-lg cursor-pointer"
+                                            className="px-3.5 py-1.5 text-xs font-semibold text-slate-300 bg-[#141720] border border-zinc-700 hover:bg-zinc-800 rounded-lg cursor-pointer"
                                           >
                                             Cancel
                                           </button>
@@ -3605,7 +3934,7 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                                             type="button"
                                             disabled={saving || uploadingFile}
                                             onClick={() => void saveInlineHubEdit(resItem.id)}
-                                            className="px-4 py-1.5 text-xs font-semibold text-white bg-slate-900 hover:bg-slate-800 rounded-lg cursor-pointer"
+                                            className="px-4 py-1.5 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-500 rounded-lg cursor-pointer"
                                           >
                                             {saving ? 'Saving...' : 'Save Changes'}
                                           </button>
@@ -3624,36 +3953,46 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                 </div>
               )}
 
-              {/* Tab 5: Student / Parent Enquiries */}
+              {/* Tab 6: User Feedback & Ratings (Private Admin Review) */}
+              {activeTab === 'feedback' && (
+                <AdminFeedbackTab
+                  feedbacks={adminData?.feedbacks || []}
+                  onDeleteFeedback={handleDeleteFeedback}
+                  onRefreshFeedbacks={handleRefreshFeedbacks}
+                  refreshing={refreshingFeedbacks}
+                />
+              )}
+
+              {/* Tab 7: Student / Parent Enquiries */}
               {activeTab === 'enquiries' && (
                 <div className="space-y-3">
-                  <h3 className="text-sm font-bold text-slate-900">
+                  <h3 className="text-sm font-bold text-white">
                     Submitted Enquiries ({adminData?.enquiries?.length || 0})
                   </h3>
                   {(adminData?.enquiries || []).length === 0 ? (
-                    <div className="p-8 rounded-xl border border-slate-200 bg-[#FAF9F6] text-center text-sm text-slate-600">
+                    <div className="p-8 rounded-xl border border-zinc-800 bg-[#0D0F14] text-center text-sm text-slate-400">
                       No enquiries submitted yet.
                     </div>
                   ) : (
-                    <div className="divide-y divide-slate-200 border border-slate-200 rounded-xl overflow-hidden">
+                    <div className="divide-y divide-zinc-800 border border-zinc-800 rounded-xl overflow-hidden">
                       {(adminData?.enquiries || []).map((enq: EnquiryItem) => (
                         <div
                           key={enq.id}
-                          className="p-4 bg-white flex flex-col sm:flex-row sm:items-start justify-between gap-4"
+                          className="p-4 bg-[#111318] flex flex-col sm:flex-row sm:items-start justify-between gap-4"
                         >
                           <div>
-                            <div className="text-sm font-bold text-slate-950">
+                            <div className="text-sm font-bold text-white">
                               {enq.studentName}
                             </div>
-                            <div className="text-xs font-mono text-amber-800 mt-0.5">
+                            <div className="text-xs font-mono text-blue-400 mt-0.5">
                               {enq.phoneOrEmail} · {formatDisplayDate(enq.createdAt)}
                             </div>
-                            <p className="mt-2 text-sm text-slate-700">{enq.message}</p>
+                            <p className="mt-2 text-sm text-slate-300">{enq.message}</p>
                           </div>
                           <button
                             type="button"
                             onClick={() => void deleteEnquiry(enq.id)}
-                            className="px-3 py-1.5 text-xs font-semibold text-red-700 border border-red-200 hover:bg-red-50 rounded-lg cursor-pointer shrink-0"
+                            className="px-3 py-1.5 text-xs font-semibold text-red-400 border border-red-500/40 hover:bg-red-950/40 rounded-lg cursor-pointer shrink-0"
                           >
                             Remove
                           </button>

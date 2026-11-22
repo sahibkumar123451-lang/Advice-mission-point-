@@ -156,5 +156,30 @@
       "updatedAt": "2026-11-15T08:00:00.000Z"
     }
   ],
-  "enquiries": []
+  "dailyUpdates": [
+    {
+      "id": "upd-welcome-batch",
+      "title": "New Academic Batch Admissions Open (Class 1 to Class 12)",
+      "description": "Morning and evening batches are open at Advice Mission Point, Ramauli, Darbhanga. Regular concept classes, weekly practice tests, and bilingual Hindi + English notes are included.",
+      "date": "2026-11-22",
+      "mediaType": "image",
+      "mediaUrl": "/src/assets/images/hero_coaching_campus_1795115509590.jpg",
+      "fileName": "coaching-batch-notice.jpg",
+      "published": true,
+      "createdAt": "2026-11-22T06:00:00.000Z",
+      "updatedAt": "2026-11-22T06:00:00.000Z"
+    },
+    {
+      "id": "upd-weekly-test-schedule",
+      "title": "Weekly Revision & Doubt-Clearing Session Schedule",
+      "description": "Every Saturday features dedicated Mathematics & Science problem-solving sessions along with Mission AI revision support for home study.",
+      "date": "2026-11-20",
+      "mediaType": "none",
+      "published": true,
+      "createdAt": "2026-11-20T06:00:00.000Z",
+      "updatedAt": "2026-11-20T06:00:00.000Z"
+    }
+  ],
+  "enquiries": [],
+  "feedbacks": []
 }

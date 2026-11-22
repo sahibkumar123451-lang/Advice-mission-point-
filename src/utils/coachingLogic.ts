@@ -1,6 +1,9 @@
 import type {
   CoachingInfo,
+  DailyUpdateItem,
+  DailyUpdateMediaType,
   EnquiryItem,
+  FeedbackRatingItem,
   GalleryCategory,
   GalleryItem,
   LearningResource,
@@ -430,13 +433,31 @@ export function mergeSiteDataPreserveExisting(
     ...baseEnquiries.filter((e) => !incomingEnqMap.has(e.id)),
   ];
 
+  const incomingUpdates = Array.isArray(incoming.dailyUpdates) ? incoming.dailyUpdates : [];
+  const baseUpdates = Array.isArray(base.dailyUpdates) ? base.dailyUpdates : [];
+  const incomingUpdMap = new Map(incomingUpdates.map((u) => [u.id, u]));
+  const mergedUpdates = sortDailyUpdatesByDate([
+    ...incomingUpdates,
+    ...baseUpdates.filter((u) => !incomingUpdMap.has(u.id)),
+  ]);
+
+  const incomingFeedbacks = Array.isArray(incoming.feedbacks) ? incoming.feedbacks : [];
+  const baseFeedbacks = Array.isArray(base.feedbacks) ? base.feedbacks : [];
+  const incomingFbMap = new Map(incomingFeedbacks.map((f) => [f.id, f]));
+  const mergedFeedbacks = [
+    ...incomingFeedbacks,
+    ...baseFeedbacks.filter((f) => !incomingFbMap.has(f.id)),
+  ].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+
   return {
     coaching: mergedCoaching,
     socialLinks: mergedSocials,
     teacher: mergedTeacher,
     gallery: mergedGallery,
     learningHub: mergedHub,
+    dailyUpdates: mergedUpdates,
     enquiries: mergedEnquiries,
+    feedbacks: mergedFeedbacks,
   };
 }
 
@@ -687,7 +708,9 @@ export function applyRealtimeCloudUpdate(
     teacher: cloud.teacher ? { ...base.teacher, ...cloud.teacher } : base.teacher,
     gallery: cloud.gallery !== undefined ? cloud.gallery : base.gallery,
     learningHub: cloud.learningHub !== undefined ? cloud.learningHub : base.learningHub,
+    dailyUpdates: cloud.dailyUpdates !== undefined ? cloud.dailyUpdates : base.dailyUpdates,
     enquiries: base.enquiries,
+    feedbacks: base.feedbacks,
   };
 }
 
@@ -911,7 +934,9 @@ export function buildSiteDataWithDraftEdits(
     teacher: nextTeacher,
     gallery: base.gallery,
     learningHub: base.learningHub,
+    dailyUpdates: base.dailyUpdates,
     enquiries: base.enquiries,
+    feedbacks: base.feedbacks,
   };
 }
 
@@ -975,5 +1000,206 @@ export function clearAdminDraftFromStorage(): void {
     // Ignore storage access errors
   }
 }
+
+export function formatDisplayDateTime(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) {
+    return 'Recent';
+  }
+  return date.toLocaleString('en-IN', {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+export function normalizeFeedbackEmail(email: string): string {
+  return email.trim().toLowerCase();
+}
+
+export function isValidEmailAddress(email: string): boolean {
+  const normalized = normalizeFeedbackEmail(email);
+  return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(normalized) && normalized.length <= 160;
+}
+
+export async function hashNormalizedEmail(email: string): Promise<string> {
+  const normalized = normalizeFeedbackEmail(email);
+  if (!normalized) return '';
+  if (globalThis.crypto?.subtle) {
+    const encoded = new TextEncoder().encode(normalized);
+    const digest = await globalThis.crypto.subtle.digest('SHA-256', encoded);
+    return Array.from(new Uint8Array(digest))
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join('');
+  }
+  // Fallback deterministic 64-char hex only if SubtleCrypto is unavailable
+  let h1 = 0x811c9dc5;
+  let h2 = 0x01000193;
+  for (let i = 0; i < normalized.length; i += 1) {
+    const ch = normalized.charCodeAt(i);
+    h1 = Math.imul(h1 ^ ch, 0x01000193) >>> 0;
+    h2 = Math.imul(h2 ^ (ch + i), 0x85ebca6b) >>> 0;
+  }
+  return `${h1.toString(16).padStart(8, '0')}${h2.toString(16).padStart(8, '0')}`.repeat(4);
+}
+
+export function validateFeedbackInput(input: {
+  fullName?: string;
+  email?: string;
+  rating?: unknown;
+  feedback?: string;
+}): {
+  valid: boolean;
+  error?: string;
+  normalizedEmail?: string;
+  rating?: number;
+} {
+  const fullName = (input.fullName || '').trim();
+  if (fullName.length < 2 || fullName.length > 120) {
+    return { valid: false, error: 'Please enter your full name (at least 2 characters).' };
+  }
+  const normalizedEmail = normalizeFeedbackEmail(input.email || '');
+  if (!isValidEmailAddress(normalizedEmail)) {
+    return { valid: false, error: 'Please enter a valid email address.' };
+  }
+  const numericRating = Number(input.rating);
+  if (!Number.isInteger(numericRating) || numericRating < 1 || numericRating > 5) {
+    return { valid: false, error: 'Please select a star rating between 1 and 5.' };
+  }
+  const feedback = (input.feedback || '').trim();
+  if (feedback.length < 5 || feedback.length > 2000) {
+    return {
+      valid: false,
+      error: 'Please write your feedback, suggestion, or concern (at least 5 characters).',
+    };
+  }
+  return { valid: true, normalizedEmail, rating: numericRating };
+}
+
+export function hasDuplicateFeedbackEmail(
+  existing: FeedbackRatingItem[],
+  email: string,
+): boolean {
+  const target = normalizeFeedbackEmail(email);
+  if (!target) return false;
+  return existing.some((item) => normalizeFeedbackEmail(item.email) === target);
+}
+
+export function filterAdminFeedbacks(
+  items: FeedbackRatingItem[],
+  starFilter: number | 'all',
+  query: string,
+): FeedbackRatingItem[] {
+  const q = query.trim().toLowerCase();
+  return [...items]
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+    .filter((item) => {
+      if (starFilter !== 'all' && item.rating !== starFilter) {
+        return false;
+      }
+      if (!q) return true;
+      return (
+        item.fullName.toLowerCase().includes(q) ||
+        item.email.toLowerCase().includes(q) ||
+        item.feedback.toLowerCase().includes(q)
+      );
+    });
+}
+
+export function computeFeedbackStats(items: FeedbackRatingItem[]): {
+  total: number;
+  average: number;
+} {
+  if (!items.length) return { total: 0, average: 0 };
+  const sum = items.reduce((acc, item) => acc + (Number(item.rating) || 0), 0);
+  return {
+    total: items.length,
+    average: Number((sum / items.length).toFixed(1)),
+  };
+}
+
+export function sortDailyUpdatesByDate(items: DailyUpdateItem[]): DailyUpdateItem[] {
+  return [...items].sort((a, b) => {
+    const dateDiff = (b.date || '').localeCompare(a.date || '');
+    if (dateDiff !== 0) return dateDiff;
+    const updatedDiff = (b.updatedAt || b.createdAt || '').localeCompare(
+      a.updatedAt || a.createdAt || '',
+    );
+    return updatedDiff;
+  });
+}
+
+export function filterDailyUpdates(
+  items: DailyUpdateItem[],
+  mediaFilter: 'all' | DailyUpdateMediaType,
+  query: string,
+  includeUnpublished = false,
+): DailyUpdateItem[] {
+  const q = query.trim().toLowerCase();
+  return sortDailyUpdatesByDate(items).filter((item) => {
+    if (!includeUnpublished && !item.published) return false;
+    if (mediaFilter !== 'all' && item.mediaType !== mediaFilter) return false;
+    if (!q) return true;
+    return (
+      item.title.toLowerCase().includes(q) ||
+      item.description.toLowerCase().includes(q) ||
+      item.date.toLowerCase().includes(q) ||
+      (item.fileName || '').toLowerCase().includes(q)
+    );
+  });
+}
+
+export function validateDailyUpdateInput(input: Partial<DailyUpdateItem>): {
+  valid: boolean;
+  error?: string;
+} {
+  const title = (input.title || '').trim();
+  if (title.length < 2 || title.length > 200) {
+    return { valid: false, error: 'Update title is required (2–200 characters).' };
+  }
+  const dateStr = (input.date || '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+    return { valid: false, error: 'Please select a valid date (YYYY-MM-DD).' };
+  }
+  const mediaType = input.mediaType || 'none';
+  if (!['none', 'image', 'video', 'pdf'].includes(mediaType)) {
+    return { valid: false, error: 'Invalid media type for update.' };
+  }
+  const hasMedia = Boolean((input.mediaUrl || '').trim());
+  const desc = (input.description || '').trim();
+  if (mediaType !== 'none' && !hasMedia) {
+    return { valid: false, error: 'Please upload a file or paste a valid URL for this update.' };
+  }
+  if (!desc && mediaType === 'none') {
+    return { valid: false, error: 'Please enter a description or attach a photo, video, or PDF.' };
+  }
+  if (desc.length > 4000) {
+    return { valid: false, error: 'Description must be under 4000 characters.' };
+  }
+  return { valid: true };
+}
+
+export function getUploadLimitForMediaType(
+  filename: string,
+  mimeType: string,
+): { kind: 'image' | 'video' | 'pdf' | 'unknown'; maxBytes: number; label: string } {
+  if (isPdfFileOrUrl(filename, mimeType)) {
+    return { kind: 'pdf', maxBytes: 25 * 1024 * 1024, label: '25 MB' };
+  }
+  if (isVideoFileOrUrl(filename, mimeType)) {
+    return { kind: 'video', maxBytes: 100 * 1024 * 1024, label: '100 MB' };
+  }
+  const cleanExt = filename.split('.').pop()?.toLowerCase() || '';
+  if (
+    mimeType.toLowerCase().startsWith('image/') ||
+    /^(png|jpe?g|gif|webp|svg|avif|bmp|heic)$/.test(cleanExt)
+  ) {
+    return { kind: 'image', maxBytes: 10 * 1024 * 1024, label: '10 MB' };
+  }
+  return { kind: 'unknown', maxBytes: 0, label: '0 MB' };
+}
+
 
 

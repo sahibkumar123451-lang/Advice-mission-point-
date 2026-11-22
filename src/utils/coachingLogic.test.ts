@@ -4,16 +4,22 @@ import {
   applyRealtimeCloudUpdate,
   buildSiteDataWithDraftEdits,
   clearAdminDraftFromStorage,
+  computeFeedbackStats,
   detectUploadCategoryAndType,
   executeMultiModelWithFallback,
+  filterAdminFeedbacks,
   filterAdminGalleryItems,
   filterAdminLearningResources,
+  filterDailyUpdates,
   filterGalleryItems,
   filterLearningResources,
   formatFirebaseAdminError,
   formatFriendlyAiError,
   formatTitleFromFilename,
+  getUploadLimitForMediaType,
   getYouTubeEmbedUrl,
+  hasDuplicateFeedbackEmail,
+  hashNormalizedEmail,
   isPdfFileOrUrl,
   isTransientFirebaseNetworkError,
   isTransientGeminiApiError,
@@ -26,8 +32,11 @@ import {
   normalizeWhatsAppUrl,
   retryWithExponentialBackoff,
   saveAdminDraftToStorage,
+  sortDailyUpdatesByDate,
   validateCoachingInfo,
+  validateDailyUpdateInput,
   validateEnquiryInput,
+  validateFeedbackInput,
   validateGalleryInput,
   validateLearningResourceInput,
   validateTeacherProfile,
@@ -490,4 +499,160 @@ test('executeMultiModelWithFallback performs instant failover to secondary model
   );
   assert.equal(authAttempts, 1);
 });
+
+test('feedback rating validation, email normalization, duplicate detection, and stats', async () => {
+  assert.equal(
+    validateFeedbackInput({
+      fullName: 'A',
+      email: 'student@example.com',
+      rating: 5,
+      feedback: 'Good coaching!',
+    }).valid,
+    false,
+  );
+  assert.equal(
+    validateFeedbackInput({
+      fullName: 'Rohan Kumar',
+      email: 'not-an-email',
+      rating: 5,
+      feedback: 'Good coaching!',
+    }).valid,
+    false,
+  );
+  assert.equal(
+    validateFeedbackInput({
+      fullName: 'Rohan Kumar',
+      email: 'rohan@example.com',
+      rating: 6,
+      feedback: 'Good coaching!',
+    }).valid,
+    false,
+  );
+
+  const validCheck = validateFeedbackInput({
+    fullName: 'Rohan Kumar',
+    email: '  Rohan@Example.COM  ',
+    rating: 5,
+    feedback: 'Very helpful Maths and Science classes by Surendra Sir.',
+  });
+  assert.equal(validCheck.valid, true);
+  assert.equal(validCheck.normalizedEmail, 'rohan@example.com');
+  assert.equal(validCheck.rating, 5);
+
+  const hashA = await hashNormalizedEmail('Rohan@Example.com');
+  const hashB = await hashNormalizedEmail(' rohan@example.com ');
+  assert.equal(hashA, hashB);
+  assert.match(hashA, /^[a-f0-9]{64}$/);
+
+  const feedbacks = [
+    {
+      id: hashA,
+      fullName: 'Rohan Kumar',
+      email: 'rohan@example.com',
+      emailHash: hashA,
+      rating: 5,
+      feedback: 'Great faculty!',
+      createdAt: '2026-11-22T10:00:00.000Z',
+    },
+    {
+      id: 'hash-2',
+      fullName: 'Priya Kumari',
+      email: 'priya@example.com',
+      emailHash: 'hash-2',
+      rating: 3,
+      feedback: 'Need more afternoon doubt classes.',
+      createdAt: '2026-11-21T09:00:00.000Z',
+    },
+  ];
+
+  assert.equal(hasDuplicateFeedbackEmail(feedbacks, 'ROHAN@example.com'), true);
+  assert.equal(hasDuplicateFeedbackEmail(feedbacks, 'newstudent@example.com'), false);
+
+  assert.equal(filterAdminFeedbacks(feedbacks, 5, '').length, 1);
+  assert.equal(filterAdminFeedbacks(feedbacks, 'all', 'doubt').length, 1);
+  assert.deepEqual(computeFeedbackStats(feedbacks), { total: 2, average: 4 });
+});
+
+test('daily updates validation, chronological sorting, filtering, and upload size limits', () => {
+  assert.equal(
+    validateDailyUpdateInput({
+      title: 'Exam Schedule',
+      date: '2026-11-22',
+      mediaType: 'pdf',
+      mediaUrl: '/uploads/schedule.pdf',
+      description: 'Class 10 test schedule.',
+    }).valid,
+    true,
+  );
+  assert.equal(
+    validateDailyUpdateInput({
+      title: 'Missing Media',
+      date: '2026-11-22',
+      mediaType: 'video',
+      mediaUrl: '',
+      description: 'Video update',
+    }).valid,
+    false,
+  );
+  assert.equal(
+    validateDailyUpdateInput({
+      title: 'Bad Date',
+      date: '22-11-2026',
+      mediaType: 'none',
+      description: 'Notice',
+    }).valid,
+    false,
+  );
+
+  const updates = [
+    {
+      id: 'u1',
+      title: 'Older Photo',
+      description: 'Oct photo',
+      date: '2026-10-15',
+      mediaType: 'image' as const,
+      mediaUrl: '/uploads/a.jpg',
+      published: true,
+      createdAt: '2026-10-15T08:00:00.000Z',
+      updatedAt: '2026-10-15T08:00:00.000Z',
+    },
+    {
+      id: 'u2',
+      title: 'Newest PDF',
+      description: 'Nov PDF',
+      date: '2026-11-22',
+      mediaType: 'pdf' as const,
+      mediaUrl: '/uploads/b.pdf',
+      published: true,
+      createdAt: '2026-11-22T08:00:00.000Z',
+      updatedAt: '2026-11-22T08:00:00.000Z',
+    },
+    {
+      id: 'u3',
+      title: 'Hidden Draft',
+      description: 'Draft note',
+      date: '2026-11-23',
+      mediaType: 'none' as const,
+      published: false,
+      createdAt: '2026-11-23T08:00:00.000Z',
+      updatedAt: '2026-11-23T08:00:00.000Z',
+    },
+  ];
+
+  const sorted = sortDailyUpdatesByDate(updates);
+  assert.equal(sorted[0].id, 'u3');
+  assert.equal(sorted[1].id, 'u2');
+  assert.equal(sorted[2].id, 'u1');
+
+  const publicOnly = filterDailyUpdates(updates, 'all', '', false);
+  assert.equal(publicOnly.length, 2);
+  assert.equal(publicOnly[0].id, 'u2');
+
+  assert.equal(filterDailyUpdates(updates, 'pdf', '', false).length, 1);
+
+  assert.equal(getUploadLimitForMediaType('photo.jpg', 'image/jpeg').label, '10 MB');
+  assert.equal(getUploadLimitForMediaType('notes.pdf', 'application/pdf').label, '25 MB');
+  assert.equal(getUploadLimitForMediaType('lecture.mp4', 'video/mp4').label, '100 MB');
+});
+
 

@@ -17,23 +17,25 @@ export function Navbar({
   const navItems = [
     { label: 'About', href: '#about' },
     { label: 'Faculty', href: '#faculty' },
+    { label: 'Daily Updates', href: '#daily-updates' },
     { label: 'Learning Hub', href: '#learning-hub' },
     { label: 'Gallery', href: '#gallery' },
+    { label: 'Feedback', href: '#feedback' },
     { label: 'Contact', href: '#contact' },
   ];
 
   return (
-    <header className="sticky top-0 z-40 bg-[#FAF9F6]/95 backdrop-blur-md border-b border-slate-200/80">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-8">
+    <header className="sticky top-0 z-40 bg-[#09090B]/95 backdrop-blur-md border-b border-zinc-800/90">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-4 lg:gap-6">
         {/* Zone 1: Single-element Brand Wordmark */}
         <a
           href="#home"
-          className="flex items-center gap-2.5 text-lg font-bold tracking-tight text-slate-900 whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-600 rounded-md px-1"
+          className="flex items-center gap-2.5 text-base sm:text-lg font-bold tracking-tight text-white whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded-md px-1"
         >
           <img
             src="/assets/aistudio/file_0000000044288211baf6fb7b37cffbd8_c0748120.png"
             alt={`${coachingName} profile logo`}
-            className="w-9 h-9 rounded-full object-cover border border-amber-200 bg-white shrink-0"
+            className="w-9 h-9 rounded-full object-cover border border-red-500/60 bg-white shrink-0"
           />
           <span>{coachingName}</span>
         </a>
@@ -41,13 +43,13 @@ export function Navbar({
         {/* Zone 2: Concise single-line navigation links */}
         <nav
           aria-label="Primary navigation"
-          className="hidden md:flex items-center gap-6 text-sm font-medium text-slate-600"
+          className="hidden lg:flex items-center gap-4 xl:gap-5 text-sm font-medium text-slate-300"
         >
           {navItems.map((item) => (
             <a
               key={item.href}
               href={item.href}
-              className="hover:text-slate-950 hover:underline underline-offset-4 decoration-amber-600 transition-colors whitespace-nowrap shrink-0 py-1"
+              className="hover:text-white hover:underline underline-offset-4 decoration-blue-500 transition-colors whitespace-nowrap shrink-0 py-1"
             >
               {item.label}
             </a>
@@ -55,7 +57,7 @@ export function Navbar({
           <button
             type="button"
             onClick={onOpenAdminClick}
-            className="hover:text-slate-950 hover:underline underline-offset-4 decoration-amber-600 transition-colors whitespace-nowrap shrink-0 py-1 cursor-pointer"
+            className="hover:text-red-400 hover:underline underline-offset-4 decoration-red-500 transition-colors whitespace-nowrap shrink-0 py-1 cursor-pointer"
           >
             Admin
           </button>
@@ -66,7 +68,7 @@ export function Navbar({
           <button
             type="button"
             onClick={onAskDoubtClick}
-            className="hidden sm:inline-flex items-center justify-center px-4 py-2 text-sm font-semibold text-white bg-slate-900 hover:bg-slate-800 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-600 focus-visible:ring-offset-2"
+            className="hidden sm:inline-flex items-center justify-center px-4 py-2 text-sm font-semibold text-white bg-blue-600 hover:bg-blue-500 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 focus-visible:ring-offset-[#09090B]"
           >
             Ask Mission AI
           </button>
@@ -76,22 +78,22 @@ export function Navbar({
             aria-label={mobileOpen ? 'Close navigation menu' : 'Open navigation menu'}
             aria-expanded={mobileOpen}
             onClick={() => setMobileOpen((prev) => !prev)}
-            className="md:hidden inline-flex items-center justify-center w-11 h-11 rounded-lg border border-slate-200 text-slate-700 hover:bg-slate-100 cursor-pointer"
+            className="lg:hidden inline-flex items-center justify-center w-11 h-11 rounded-lg border border-zinc-800 text-slate-200 hover:bg-zinc-900 cursor-pointer"
           >
             {mobileOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
           </button>
         </div>
       </div>
 
-      {/* Mobile Navigation Drawer */}
+      {/* Mobile & Tablet Navigation Drawer */}
       {mobileOpen && (
-        <div className="md:hidden border-t border-slate-200 bg-[#FAF9F6] px-4 py-4 space-y-1">
+        <div className="lg:hidden border-t border-zinc-800 bg-[#0D0F14] px-4 py-4 space-y-1">
           {navItems.map((item) => (
             <a
               key={item.href}
               href={item.href}
               onClick={() => setMobileOpen(false)}
-              className="block px-3 py-2.5 text-base font-medium text-slate-800 hover:bg-slate-100 rounded-lg"
+              className="block px-3 py-2.5 text-base font-medium text-slate-200 hover:bg-zinc-800/80 hover:text-white rounded-lg"
             >
               {item.label}
             </a>
@@ -102,7 +104,7 @@ export function Navbar({
               setMobileOpen(false);
               onOpenAdminClick();
             }}
-            className="w-full text-left px-3 py-2.5 text-base font-medium text-slate-800 hover:bg-slate-100 rounded-lg cursor-pointer"
+            className="w-full text-left px-3 py-2.5 text-base font-medium text-red-400 hover:bg-zinc-800/80 rounded-lg cursor-pointer"
           >
             Admin Panel
           </button>
@@ -113,7 +115,7 @@ export function Navbar({
                 setMobileOpen(false);
                 onAskDoubtClick();
               }}
-              className="w-full py-2.5 px-4 text-sm font-semibold text-white bg-slate-900 hover:bg-slate-800 rounded-lg cursor-pointer"
+              className="w-full py-2.5 px-4 text-sm font-semibold text-white bg-blue-600 hover:bg-blue-500 rounded-lg cursor-pointer"
             >
               Ask Mission AI
             </button>

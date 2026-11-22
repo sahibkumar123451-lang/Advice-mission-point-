@@ -17,40 +17,40 @@ export function HeroSection({ coaching, onAskQuestionClick }: HeroSectionProps) 
   return (
     <section
       id="home"
-      className="relative border-b border-slate-200/80 bg-[#FAF9F6] pt-10 pb-14 lg:pt-16 lg:pb-20"
+      className="relative border-b border-zinc-800/80 bg-[#09090B] pt-10 pb-14 lg:pt-16 lg:pb-20"
     >
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-10 lg:gap-12 items-stretch">
           {/* Left Editorial Column */}
           <div className={`${hasHeroMedia ? 'lg:col-span-6' : 'lg:col-span-10'} flex flex-col justify-center`}>
-            <div className="flex flex-wrap items-center gap-2 text-sm font-medium text-amber-800 mb-4">
-              <MapPin className="w-4 h-4 shrink-0" aria-hidden="true" />
+            <div className="flex flex-wrap items-center gap-2 text-sm font-medium text-blue-400 mb-4">
+              <MapPin className="w-4 h-4 text-red-400 shrink-0" aria-hidden="true" />
               <span>{coaching.address}</span>
-              <span aria-hidden="true">·</span>
-              <span>Class 1 to Class 12</span>
+              <span aria-hidden="true" className="text-zinc-600">·</span>
+              <span className="text-slate-300">Class 1 to Class 12</span>
             </div>
 
             <div className="flex items-center gap-4">
               <img
                 src="/assets/aistudio/file_0000000044288211baf6fb7b37cffbd8_c0748120.png"
                 alt={`${coaching.name} official coaching profile emblem`}
-                className="w-16 h-16 sm:w-20 sm:h-20 rounded-full object-cover border-2 border-amber-200 bg-white shadow-sm shrink-0"
+                className="w-16 h-16 sm:w-20 sm:h-20 rounded-full object-cover border-2 border-red-500/70 bg-white shadow-md shrink-0"
               />
               <div>
-                <h1 className="text-3xl sm:text-5xl lg:text-[3.2rem] font-extrabold tracking-tight text-slate-950 leading-[1.08] text-balance">
+                <h1 className="text-3xl sm:text-5xl lg:text-[3.2rem] font-extrabold tracking-tight text-white leading-[1.08] text-balance">
                   {coaching.name}
                 </h1>
-                <p className="mt-1.5 text-lg sm:text-2xl font-semibold text-amber-700 tracking-tight">
+                <p className="mt-1.5 text-lg sm:text-2xl font-semibold text-red-400 tracking-tight">
                   {coaching.tagline}
                 </p>
               </div>
             </div>
 
-            <p className="mt-5 text-base sm:text-lg text-slate-700 leading-relaxed max-w-xl">
+            <p className="mt-5 text-base sm:text-lg text-slate-200 leading-relaxed max-w-xl">
               {coaching.welcomeHeadline}
             </p>
 
-            <p className="mt-3 text-sm sm:text-base text-slate-600 leading-relaxed max-w-xl">
+            <p className="mt-3 text-sm sm:text-base text-slate-400 leading-relaxed max-w-xl">
               {coaching.welcomeSubtitle}
             </p>
 
@@ -58,46 +58,53 @@ export function HeroSection({ coaching, onAskQuestionClick }: HeroSectionProps) 
               <button
                 type="button"
                 onClick={onAskQuestionClick}
-                className="inline-flex items-center gap-2 px-6 py-3 text-sm sm:text-base font-semibold text-white bg-slate-900 hover:bg-slate-800 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-600 focus-visible:ring-offset-2"
+                className="inline-flex items-center gap-2 px-6 py-3 text-sm sm:text-base font-semibold text-white bg-blue-600 hover:bg-blue-500 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 focus-visible:ring-offset-[#09090B]"
               >
                 <span>Ask Mission AI</span>
                 <ArrowRight className="w-4 h-4" aria-hidden="true" />
               </button>
 
               <a
+                href="#daily-updates"
+                className="inline-flex items-center gap-1.5 px-5 py-3 text-sm sm:text-base font-semibold text-slate-100 bg-[#141720] border border-zinc-700 hover:border-red-500/60 hover:bg-zinc-900 rounded-lg transition-colors whitespace-nowrap shrink-0"
+              >
+                Daily Updates
+              </a>
+
+              <a
                 href="#learning-hub"
-                className="inline-flex items-center gap-1.5 px-5 py-3 text-sm sm:text-base font-semibold text-slate-800 bg-white border border-slate-300 hover:border-slate-400 hover:bg-slate-50 rounded-lg transition-colors whitespace-nowrap shrink-0"
+                className="inline-flex items-center gap-1.5 px-5 py-3 text-sm sm:text-base font-semibold text-slate-300 bg-transparent border border-zinc-800 hover:border-zinc-600 hover:text-white rounded-lg transition-colors whitespace-nowrap shrink-0"
               >
                 Explore Learning Hub
               </a>
             </div>
 
-            <div className="mt-10 pt-6 border-t border-slate-200 grid grid-cols-1 sm:grid-cols-3 gap-4 max-w-lg">
+            <div className="mt-10 pt-6 border-t border-zinc-800 grid grid-cols-1 sm:grid-cols-3 gap-4 max-w-lg">
               <div>
-                <div className="text-xs font-medium text-slate-500">Classes Covered</div>
-                <div className="mt-1 text-base font-bold text-slate-900 tabular-nums">
+                <div className="text-xs font-medium text-slate-400">Classes Covered</div>
+                <div className="mt-1 text-base font-bold text-white tabular-nums">
                   Class 1 – 12
                 </div>
               </div>
               <div>
-                <div className="text-xs font-medium text-slate-500">Instruction</div>
-                <div className="mt-1 text-base font-bold text-slate-900">
+                <div className="text-xs font-medium text-slate-400">Instruction</div>
+                <div className="mt-1 text-base font-bold text-white">
                   Hindi &amp; English
                 </div>
               </div>
               <div>
-                <div className="text-xs font-medium text-slate-500">Doubt Support</div>
-                <div className="mt-1 text-base font-bold text-slate-900">
+                <div className="text-xs font-medium text-slate-400">Doubt Support</div>
+                <div className="mt-1 text-base font-bold text-blue-400">
                   Classroom &amp; Mission AI
                 </div>
               </div>
             </div>
           </div>
 
-          {/* Right Media Column (Replaceable or Removable by Owner in Admin Panel) */}
+          {/* Right Media Column */}
           {hasHeroMedia && (
             <div className="lg:col-span-6 flex">
-              <div className="relative w-full min-h-[300px] sm:min-h-[380px] lg:min-h-full rounded-2xl overflow-hidden border border-slate-200 bg-slate-100">
+              <div className="relative w-full min-h-[300px] sm:min-h-[380px] lg:min-h-full rounded-2xl overflow-hidden border border-zinc-800 bg-[#111318] shadow-2xl">
                 {isHeroVideo ? (
                   <video
                     src={resolvedHeroUrl}
@@ -115,11 +122,11 @@ export function HeroSection({ coaching, onAskQuestionClick }: HeroSectionProps) 
                     className="w-full h-full object-cover lg:h-full"
                   />
                 )}
-                <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-slate-950/85 via-slate-950/40 to-transparent p-6 text-white">
-                  <p className="text-xs font-medium text-amber-300">
+                <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/90 via-black/55 to-transparent p-6 text-white">
+                  <p className="text-xs font-semibold text-red-400 uppercase tracking-wider">
                     Campus &amp; Classroom Mentorship
                   </p>
-                  <p className="mt-1 text-sm sm:text-base font-semibold leading-snug">
+                  <p className="mt-1 text-sm sm:text-base font-semibold text-slate-100 leading-snug">
                     {coaching.officeHours} · {coaching.address}
                   </p>
                 </div>

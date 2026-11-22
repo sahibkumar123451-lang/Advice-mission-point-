@@ -14,44 +14,49 @@ export function Footer({
   onOpenAdminClick,
 }: FooterProps) {
   return (
-    <footer className="bg-slate-950 text-slate-300 border-t border-slate-800 py-12">
+    <footer className="bg-[#050507] text-slate-300 border-t border-zinc-800 py-12">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="grid grid-cols-1 md:grid-cols-12 gap-8 pb-10 border-b border-slate-800">
+        <div className="grid grid-cols-1 md:grid-cols-12 gap-8 pb-10 border-b border-zinc-800">
           <div className="md:col-span-5">
             <div className="flex items-center gap-3.5">
               <img
                 src="/assets/aistudio/file_0000000044288211baf6fb7b37cffbd8_c0748120.png"
                 alt={`${coaching.name} logo`}
-                className="w-11 h-11 rounded-full object-cover border border-amber-400/50 bg-white shrink-0"
+                className="w-11 h-11 rounded-full object-cover border border-red-500/70 bg-white shrink-0"
               />
               <div>
                 <div className="text-xl font-bold text-white tracking-tight">
                   {coaching.name}
                 </div>
-                <p className="mt-0.5 text-sm font-semibold text-amber-400">
+                <p className="mt-0.5 text-sm font-semibold text-red-400">
                   {coaching.tagline}
                 </p>
               </div>
             </div>
             <p className="mt-3 text-sm text-slate-400 leading-relaxed max-w-sm">
-              {coaching.address} · Class 1 to Class 12 academic guidance, bilingual Learning Hub, Campus Gallery, and Mission AI doubt support.
+              {coaching.address} · Class 1 to Class 12 academic guidance, Daily Updates, bilingual Learning Hub, Campus Gallery, and Mission AI doubt support.
             </p>
           </div>
 
           <div className="md:col-span-3 space-y-2 text-sm">
             <div className="font-semibold text-white mb-2">Explore</div>
             <div>
-              <a href="#about" className="hover:text-white transition-colors">
+              <a href="#about" className="hover:text-blue-400 transition-colors">
                 About Coaching
               </a>
             </div>
             <div>
-              <a href="#faculty" className="hover:text-white transition-colors">
+              <a href="#faculty" className="hover:text-blue-400 transition-colors">
                 Teacher Profile
               </a>
             </div>
             <div>
-              <a href="#learning-hub" className="hover:text-white transition-colors">
+              <a href="#daily-updates" className="hover:text-blue-400 transition-colors">
+                Daily Updates
+              </a>
+            </div>
+            <div>
+              <a href="#learning-hub" className="hover:text-blue-400 transition-colors">
                 Advice Mission Learning Hub
               </a>
             </div>
@@ -59,18 +64,23 @@ export function Footer({
               <button
                 type="button"
                 onClick={onAskDoubtClick}
-                className="hover:text-white transition-colors cursor-pointer"
+                className="hover:text-blue-400 transition-colors cursor-pointer"
               >
                 Mission AI Assistant
               </button>
             </div>
             <div>
-              <a href="#gallery" className="hover:text-white transition-colors">
+              <a href="#gallery" className="hover:text-blue-400 transition-colors">
                 Photo &amp; Video Gallery
               </a>
             </div>
             <div>
-              <a href="#contact" className="hover:text-white transition-colors">
+              <a href="#feedback" className="hover:text-blue-400 transition-colors">
+                User Rating &amp; Feedback
+              </a>
+            </div>
+            <div>
+              <a href="#contact" className="hover:text-blue-400 transition-colors">
                 Enquiry &amp; Contact
               </a>
             </div>
@@ -83,7 +93,7 @@ export function Footer({
                 href={socialLinks.whatsapp}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="hover:text-amber-400 transition-colors"
+                className="hover:text-blue-400 transition-colors"
               >
                 WhatsApp
               </a>
@@ -91,7 +101,7 @@ export function Footer({
                 href={socialLinks.instagram}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="hover:text-amber-400 transition-colors"
+                className="hover:text-blue-400 transition-colors"
               >
                 Instagram
               </a>
@@ -99,7 +109,7 @@ export function Footer({
                 href={socialLinks.facebook}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="hover:text-amber-400 transition-colors"
+                className="hover:text-blue-400 transition-colors"
               >
                 Facebook
               </a>
@@ -107,7 +117,7 @@ export function Footer({
                 href={socialLinks.youtube}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="hover:text-amber-400 transition-colors"
+                className="hover:text-blue-400 transition-colors"
               >
                 YouTube
               </a>
@@ -126,7 +136,7 @@ export function Footer({
               <button
                 type="button"
                 onClick={onOpenAdminClick}
-                className="text-xs font-semibold text-amber-400 hover:text-amber-300 underline underline-offset-4 cursor-pointer"
+                className="text-xs font-semibold text-red-400 hover:text-red-300 underline underline-offset-4 cursor-pointer"
               >
                 Open Admin Panel
               </button>

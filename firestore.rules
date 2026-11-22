@@ -145,6 +145,40 @@ service cloud.firestore {
         data.updatedAt is timestamp;
     }
 
+    function isValidDailyUpdate(data, updateId) {
+      return data.keys().hasAll(['id', 'title', 'date', 'mediaType', 'published', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly([
+          'id', 'title', 'description', 'date', 'mediaType',
+          'mediaUrl', 'fileName', 'published', 'createdAt', 'updatedAt'
+        ]) &&
+        data.id == updateId &&
+        isValidId(data.id) &&
+        data.title is string && data.title.size() >= 2 && data.title.size() <= 200 &&
+        (!('description' in data) || (data.description is string && data.description.size() <= 4000)) &&
+        data.date is string && data.date.size() == 10 && data.date.matches('^\\d{4}-\\d{2}-\\d{2}$') &&
+        data.mediaType in ['none', 'image', 'video', 'pdf'] &&
+        (!('mediaUrl' in data) || (data.mediaUrl is string && data.mediaUrl.size() <= 800000)) &&
+        (!('fileName' in data) || (data.fileName is string && data.fileName.size() <= 240)) &&
+        data.published is bool &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidFeedbackRating(data, emailHash) {
+      return data.keys().hasAll(['id', 'fullName', 'email', 'emailHash', 'rating', 'feedback', 'createdAt']) &&
+        data.keys().hasOnly(['id', 'fullName', 'email', 'emailHash', 'rating', 'feedback', 'createdAt']) &&
+        emailHash.size() == 64 &&
+        emailHash.matches('^[a-f0-9]{64}$') &&
+        data.id == emailHash &&
+        data.emailHash == emailHash &&
+        data.fullName is string && data.fullName.size() >= 2 && data.fullName.size() <= 120 &&
+        data.email is string && data.email.size() >= 5 && data.email.size() <= 160 &&
+        data.email.matches('^[^@\\s]+@[^@\\s]+\\.[^@\\s]{2,}$') &&
+        data.rating is int && data.rating >= 1 && data.rating <= 5 &&
+        data.feedback is string && data.feedback.size() >= 5 && data.feedback.size() <= 2000 &&
+        data.createdAt is timestamp;
+    }
+
     function isValidAdminUser(data, uid) {
       return data.keys().hasAll(['uid', 'email', 'createdAt']) &&
         data.keys().hasOnly(['uid', 'email', 'createdAt']) &&
@@ -243,6 +277,34 @@ service cloud.firestore {
           'languageNote', 'keyFormulas', 'pdfUrl', 'pdfName', 'published', 'updatedAt'
         ]);
       allow delete: if isAdmin() && isValidId(itemId);
+    }
+
+    match /dailyUpdates/{updateId} {
+      allow get: if isValidId(updateId) && (existing().published == true || isAdmin());
+      allow list: if resource.data.published == true || isBootstrappedAdmin();
+      allow create: if isAdmin() && isValidId(updateId) &&
+        isValidDailyUpdate(incoming(), updateId) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isAdmin() && isValidId(updateId) &&
+        isValidDailyUpdate(incoming(), updateId) &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'title', 'description', 'date', 'mediaType',
+          'mediaUrl', 'fileName', 'published', 'updatedAt'
+        ]);
+      allow delete: if isAdmin() && isValidId(updateId);
+    }
+
+    match /feedbackRatings/{emailHash} {
+      allow get: if isValidId(emailHash) && isAdmin();
+      allow list: if isBootstrappedAdmin();
+      allow create: if isValidId(emailHash) &&
+        isValidFeedbackRating(incoming(), emailHash) &&
+        incoming().createdAt == request.time;
+      allow update: if false;
+      allow delete: if isValidId(emailHash) && isAdmin();
     }
   }
 }

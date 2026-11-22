@@ -7,7 +7,9 @@ import type { Request, Response, NextFunction } from 'express';
 import { GoogleGenAI, ThinkingLevel } from '@google/genai';
 import type {
   CoachingInfo,
+  DailyUpdateItem,
   EnquiryItem,
+  FeedbackRatingItem,
   GalleryItem,
   LearningResource,
   SiteData,
@@ -19,6 +21,8 @@ import {
   ADMIN_PASSCODE_SALT,
   executeMultiModelWithFallback,
   formatFriendlyAiError,
+  getUploadLimitForMediaType,
+  hasDuplicateFeedbackEmail,
   isPdfFileOrUrl,
   isTransientGeminiApiError,
   isVideoFileOrUrl,
@@ -27,8 +31,11 @@ import {
   normalizeExternalUrl,
   normalizeSafeMediaOrExternalUrl,
   normalizeWhatsAppUrl,
+  sortDailyUpdatesByDate,
   validateCoachingInfo,
+  validateDailyUpdateInput,
   validateEnquiryInput,
+  validateFeedbackInput,
   validateGalleryInput,
   validateLearningResourceInput,
   validateTeacherProfile,
@@ -77,7 +84,11 @@ function readStore(): SiteData {
       learningHub: Array.isArray(parsed.learningHub)
         ? parsed.learningHub
         : DEFAULT_SITE_DATA.learningHub,
+      dailyUpdates: Array.isArray(parsed.dailyUpdates)
+        ? parsed.dailyUpdates
+        : DEFAULT_SITE_DATA.dailyUpdates,
       enquiries: Array.isArray(parsed.enquiries) ? parsed.enquiries : [],
+      feedbacks: Array.isArray(parsed.feedbacks) ? parsed.feedbacks : [],
     };
   } catch {
     return structuredClone(DEFAULT_SITE_DATA);
@@ -128,11 +139,11 @@ async function startServer() {
   ensureStorageDirs();
   const app = express();
 
-  // Raw binary file upload endpoint (Photos, Videos, PDFs up to 250 MB per file, no base64 bloat)
+  // Raw binary file upload endpoint (Photos <= 10MB, PDFs <= 25MB, Videos <= 100MB)
   app.post(
     '/api/admin/upload-file',
     requireAdmin,
-    express.raw({ type: '*/*', limit: '250mb' }),
+    express.raw({ type: '*/*', limit: '105mb' }),
     (req: Request, res: Response) => {
       const rawName = decodeURIComponent(req.header('x-filename') || 'upload.bin');
       const filename = path.basename(rawName) || 'upload.bin';
@@ -149,9 +160,22 @@ async function startServer() {
         return;
       }
 
+      const limitInfo = getUploadLimitForMediaType(filename, mimeType);
+      if (limitInfo.maxBytes > 0 && buffer.length > limitInfo.maxBytes) {
+        res.status(413).json({
+          error: `File exceeds maximum allowed size (${limitInfo.label} for ${limitInfo.kind} files).`,
+        });
+        return;
+      }
+
       const ext = path.extname(filename).replace(/[^a-zA-Z0-9.]/g, '') || '.bin';
       const safeName = `${Date.now()}-${crypto.randomUUID().slice(0, 8)}${ext}`;
-      fs.writeFileSync(path.join(UPLOADS_DIR, safeName), buffer);
+      const targetPath = path.resolve(UPLOADS_DIR, safeName);
+      if (!targetPath.startsWith(UPLOADS_DIR + path.sep)) {
+        res.status(400).json({ error: 'Invalid upload destination.' });
+        return;
+      }
+      fs.writeFileSync(targetPath, buffer);
       res.status(201).json({ url: `/uploads/${safeName}`, filename });
     },
   );
@@ -159,7 +183,7 @@ async function startServer() {
   app.use(express.json({ limit: '60mb' }));
   app.use('/uploads', express.static(UPLOADS_DIR));
 
-  // Public site data (only published gallery & learning hub items, no private enquiries)
+  // Public site data (only published gallery, learning hub & daily updates; NEVER private enquiries or feedbacks)
   app.get('/api/site', (_req: Request, res: Response) => {
     const data = readStore();
     res.json({
@@ -168,6 +192,9 @@ async function startServer() {
       teacher: data.teacher,
       gallery: data.gallery.filter((item) => item.published),
       learningHub: data.learningHub.filter((item) => item.published),
+      dailyUpdates: sortDailyUpdatesByDate(
+        (data.dailyUpdates || []).filter((item) => item.published),
+      ),
     });
   });
 
@@ -190,6 +217,51 @@ async function startServer() {
     store.enquiries = [enquiry, ...(store.enquiries || [])];
     writeStore(store);
     res.status(201).json({ ok: true, enquiry });
+  });
+
+  // Public User Rating & Feedback submission (strict anti-duplicate email check; private PII never exposed publicly)
+  app.post('/api/feedback', (req: Request, res: Response) => {
+    const body = req.body as {
+      fullName?: string;
+      email?: string;
+      rating?: unknown;
+      feedback?: string;
+    };
+
+    const validation = validateFeedbackInput(body);
+    if (!validation.valid || !validation.normalizedEmail || !validation.rating) {
+      res.status(400).json({ error: validation.error || 'Invalid feedback details.' });
+      return;
+    }
+
+    const store = readStore();
+    const existingFeedbacks = store.feedbacks || [];
+    if (hasDuplicateFeedbackEmail(existingFeedbacks, validation.normalizedEmail)) {
+      res.status(409).json({
+        error:
+          'Feedback and rating have already been submitted with this email address. Duplicate ratings from the same email are not allowed.',
+      });
+      return;
+    }
+
+    const emailHash = crypto
+      .createHash('sha256')
+      .update(validation.normalizedEmail)
+      .digest('hex');
+
+    const item: FeedbackRatingItem = {
+      id: emailHash,
+      fullName: body.fullName!.trim(),
+      email: validation.normalizedEmail,
+      emailHash,
+      rating: validation.rating,
+      feedback: body.feedback!.trim(),
+      createdAt: new Date().toISOString(),
+    };
+
+    store.feedbacks = [item, ...existingFeedbacks];
+    writeStore(store);
+    res.status(201).json({ ok: true, id: item.id, createdAt: item.createdAt });
   });
 
   function buildMissionAiPromptContext(
@@ -959,6 +1031,146 @@ STRICT RESPONSE RULES:
     const { id } = req.params;
     const store = readStore();
     store.enquiries = (store.enquiries || []).filter((e) => e.id !== id);
+    writeStore(store);
+    res.json({ ok: true });
+  });
+
+  // Admin User Feedback & Ratings (View & Delete only)
+  app.get('/api/admin/feedback', requireAdmin, (_req: Request, res: Response) => {
+    const store = readStore();
+    const sorted = [...(store.feedbacks || [])].sort((a, b) =>
+      b.createdAt.localeCompare(a.createdAt),
+    );
+    res.json({ feedbacks: sorted });
+  });
+
+  app.delete('/api/admin/feedback/:id', requireAdmin, (req: Request, res: Response) => {
+    const { id } = req.params;
+    const store = readStore();
+    const current = store.feedbacks || [];
+    const next = current.filter((f) => f.id !== id && f.emailHash !== id);
+    if (next.length === current.length) {
+      res.status(404).json({ error: 'Feedback entry not found.' });
+      return;
+    }
+    store.feedbacks = next;
+    writeStore(store);
+    res.json({ ok: true });
+  });
+
+  // Admin Daily Updates CRUD
+  app.post('/api/admin/daily-updates', requireAdmin, (req: Request, res: Response) => {
+    const body = req.body as Partial<DailyUpdateItem>;
+    const rawMediaUrl = (body.mediaUrl || '').trim();
+    const cleanMediaUrl = rawMediaUrl ? normalizeSafeMediaOrExternalUrl(rawMediaUrl) : '';
+    const resolvedMediaType: DailyUpdateItem['mediaType'] = !cleanMediaUrl
+      ? 'none'
+      : body.mediaType === 'pdf' || isPdfFileOrUrl(cleanMediaUrl, '')
+        ? 'pdf'
+        : body.mediaType === 'video' || isVideoFileOrUrl(cleanMediaUrl, '')
+          ? 'video'
+          : body.mediaType === 'image'
+            ? 'image'
+            : body.mediaType === 'none'
+              ? 'none'
+              : 'image';
+
+    const candidate: Partial<DailyUpdateItem> = {
+      ...body,
+      mediaType: resolvedMediaType,
+      mediaUrl: cleanMediaUrl || undefined,
+    };
+
+    const validation = validateDailyUpdateInput(candidate);
+    if (!validation.valid) {
+      res.status(400).json({ error: validation.error });
+      return;
+    }
+
+    const now = new Date().toISOString();
+    const store = readStore();
+    const item: DailyUpdateItem = {
+      id: `upd-${crypto.randomUUID().slice(0, 8)}`,
+      title: body.title!.trim(),
+      description: (body.description || '').trim(),
+      date: body.date!.trim(),
+      mediaType: resolvedMediaType,
+      mediaUrl: resolvedMediaType === 'none' ? undefined : cleanMediaUrl,
+      fileName: resolvedMediaType === 'none' ? undefined : body.fileName?.trim() || undefined,
+      published: body.published ?? true,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    store.dailyUpdates = sortDailyUpdatesByDate([item, ...(store.dailyUpdates || [])]);
+    writeStore(store);
+    res.status(201).json({ update: item });
+  });
+
+  app.put('/api/admin/daily-updates/:id', requireAdmin, (req: Request, res: Response) => {
+    const { id } = req.params;
+    const body = req.body as Partial<DailyUpdateItem>;
+    const store = readStore();
+    const list = store.dailyUpdates || [];
+    const idx = list.findIndex((u) => u.id === id);
+    if (idx === -1) {
+      res.status(404).json({ error: 'Daily update not found.' });
+      return;
+    }
+
+    const rawMediaUrl =
+      body.mediaUrl !== undefined ? body.mediaUrl.trim() : list[idx].mediaUrl || '';
+    const cleanMediaUrl = rawMediaUrl ? normalizeSafeMediaOrExternalUrl(rawMediaUrl) : '';
+    const requestedType = body.mediaType ?? list[idx].mediaType;
+    const resolvedMediaType: DailyUpdateItem['mediaType'] =
+      requestedType === 'none' || !cleanMediaUrl
+        ? 'none'
+        : requestedType === 'pdf' || isPdfFileOrUrl(cleanMediaUrl, '')
+          ? 'pdf'
+          : requestedType === 'video' || isVideoFileOrUrl(cleanMediaUrl, '')
+            ? 'video'
+            : 'image';
+
+    const updated: DailyUpdateItem = {
+      ...list[idx],
+      title: (body.title ?? list[idx].title).trim(),
+      description: (body.description ?? list[idx].description).trim(),
+      date: (body.date ?? list[idx].date).trim(),
+      mediaType: resolvedMediaType,
+      mediaUrl: resolvedMediaType === 'none' ? undefined : cleanMediaUrl,
+      fileName:
+        resolvedMediaType === 'none'
+          ? undefined
+          : body.fileName !== undefined
+            ? body.fileName.trim() || undefined
+            : list[idx].fileName,
+      published: body.published ?? list[idx].published,
+      createdAt: list[idx].createdAt,
+      updatedAt: new Date().toISOString(),
+    };
+
+    const validation = validateDailyUpdateInput(updated);
+    if (!validation.valid) {
+      res.status(400).json({ error: validation.error });
+      return;
+    }
+
+    list[idx] = updated;
+    store.dailyUpdates = sortDailyUpdatesByDate(list);
+    writeStore(store);
+    res.json({ update: updated });
+  });
+
+  app.delete('/api/admin/daily-updates/:id', requireAdmin, (req: Request, res: Response) => {
+    const { id } = req.params;
+    const store = readStore();
+    const current = store.dailyUpdates || [];
+    const next = current.filter((u) => u.id !== id);
+    if (next.length === current.length) {
+      res.status(404).json({ error: 'Daily update not found.' });
+      return;
+    }
+    store.dailyUpdates = next;
     writeStore(store);
     res.json({ ok: true });
   });

@@ -25,13 +25,21 @@ import {
 import firebaseConfig from '../../firebase-applet-config.json';
 import type {
   CoachingInfo,
+  DailyUpdateItem,
+  FeedbackRatingItem,
   GalleryItem,
   LearningResource,
   SiteData,
   SocialLinks,
   TeacherProfile,
 } from '../types/coaching';
-import { retryWithExponentialBackoff } from './coachingLogic';
+import {
+  extractFirebaseErrorText,
+  hashNormalizedEmail,
+  retryWithExponentialBackoff,
+  sortDailyUpdatesByDate,
+  validateFeedbackInput,
+} from './coachingLogic';
 
 const app = initializeApp(firebaseConfig);
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
@@ -283,6 +291,39 @@ export async function loadPublicSiteFromFirestore(): Promise<Partial<SiteData>> 
     handleFirestoreError(error, OperationType.LIST, 'learningHubItems');
   }
 
+  try {
+    const updQuery = query(
+      collection(db, 'dailyUpdates'),
+      where('published', '==', true),
+    );
+    const updSnap = await retryWithExponentialBackoff(
+      () => getDocs(updQuery),
+      { maxRetries: 3, baseDelayMs: 500, maxDelayMs: 2500 },
+    );
+    if (!updSnap.empty) {
+      result.dailyUpdates = sortDailyUpdatesByDate(
+        updSnap.docs.map((d) => {
+          const data = d.data();
+          const mediaType = (data.mediaType || 'none') as DailyUpdateItem['mediaType'];
+          return {
+            id: String(data.id || d.id),
+            title: String(data.title || ''),
+            description: String(data.description || ''),
+            date: String(data.date || ''),
+            mediaType,
+            mediaUrl: typeof data.mediaUrl === 'string' ? data.mediaUrl : undefined,
+            fileName: typeof data.fileName === 'string' ? data.fileName : undefined,
+            published: Boolean(data.published),
+            createdAt: toIsoString(data.createdAt),
+            updatedAt: toIsoString(data.updatedAt),
+          };
+        }),
+      );
+    }
+  } catch (error) {
+    handleFirestoreError(error, OperationType.LIST, 'dailyUpdates');
+  }
+
   return result;
 }
 
@@ -293,6 +334,7 @@ export function subscribeToPublicSiteFromFirestore(
   const currentCloud: Partial<SiteData> = {};
   let hasSeenCloudGallery = false;
   let hasSeenCloudHub = false;
+  let hasSeenCloudUpdates = false;
 
   const emitIfPopulated = () => {
     if (
@@ -300,7 +342,8 @@ export function subscribeToPublicSiteFromFirestore(
       currentCloud.socialLinks ||
       currentCloud.teacher ||
       currentCloud.gallery !== undefined ||
-      currentCloud.learningHub !== undefined
+      currentCloud.learningHub !== undefined ||
+      currentCloud.dailyUpdates !== undefined
     ) {
       onCloudChange({ ...currentCloud });
     }
@@ -443,12 +486,42 @@ export function subscribeToPublicSiteFromFirestore(
     (error) => reportError(error, OperationType.LIST, 'learningHubItems'),
   );
 
+  const unsubUpdates = onSnapshot(
+    query(collection(db, 'dailyUpdates'), where('published', '==', true)),
+    (snap) => {
+      if (!snap.empty || hasSeenCloudUpdates) {
+        hasSeenCloudUpdates = true;
+        currentCloud.dailyUpdates = sortDailyUpdatesByDate(
+          snap.docs.map((d) => {
+            const data = d.data();
+            const mediaType = (data.mediaType || 'none') as DailyUpdateItem['mediaType'];
+            return {
+              id: String(data.id || d.id),
+              title: String(data.title || ''),
+              description: String(data.description || ''),
+              date: String(data.date || ''),
+              mediaType,
+              mediaUrl: typeof data.mediaUrl === 'string' ? data.mediaUrl : undefined,
+              fileName: typeof data.fileName === 'string' ? data.fileName : undefined,
+              published: Boolean(data.published),
+              createdAt: toIsoString(data.createdAt),
+              updatedAt: toIsoString(data.updatedAt),
+            };
+          }),
+        );
+        emitIfPopulated();
+      }
+    },
+    (error) => reportError(error, OperationType.LIST, 'dailyUpdates'),
+  );
+
   return () => {
     unsubCoaching();
     unsubSocial();
     unsubTeacher();
     unsubGallery();
     unsubHub();
+    unsubUpdates();
   };
 }
 
@@ -514,6 +587,60 @@ export async function loadAllAdminSiteDataFromFirestore(): Promise<Partial<SiteD
     }
   } catch (error) {
     handleFirestoreError(error, OperationType.LIST, 'learningHubItems');
+  }
+
+  try {
+    const updSnap = await retryWithExponentialBackoff(
+      () => getDocs(collection(db, 'dailyUpdates')),
+      { maxRetries: 3, baseDelayMs: 500, maxDelayMs: 2500 },
+    );
+    if (!updSnap.empty) {
+      result.dailyUpdates = sortDailyUpdatesByDate(
+        updSnap.docs.map((d) => {
+          const data = d.data();
+          const mediaType = (data.mediaType || 'none') as DailyUpdateItem['mediaType'];
+          return {
+            id: String(data.id || d.id),
+            title: String(data.title || ''),
+            description: String(data.description || ''),
+            date: String(data.date || ''),
+            mediaType,
+            mediaUrl: typeof data.mediaUrl === 'string' ? data.mediaUrl : undefined,
+            fileName: typeof data.fileName === 'string' ? data.fileName : undefined,
+            published: Boolean(data.published),
+            createdAt: toIsoString(data.createdAt),
+            updatedAt: toIsoString(data.updatedAt),
+          };
+        }),
+      );
+    }
+  } catch (error) {
+    handleFirestoreError(error, OperationType.LIST, 'dailyUpdates');
+  }
+
+  try {
+    const fbSnap = await retryWithExponentialBackoff(
+      () => getDocs(collection(db, 'feedbackRatings')),
+      { maxRetries: 2, baseDelayMs: 400, maxDelayMs: 1800 },
+    );
+    if (!fbSnap.empty) {
+      result.feedbacks = fbSnap.docs
+        .map((d) => {
+          const data = d.data();
+          return {
+            id: String(data.id || d.id),
+            fullName: String(data.fullName || ''),
+            email: String(data.email || ''),
+            emailHash: String(data.emailHash || d.id),
+            rating: Number(data.rating || 5),
+            feedback: String(data.feedback || ''),
+            createdAt: toIsoString(data.createdAt),
+          };
+        })
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    }
+  } catch {
+    // feedbackRatings list requires bootstrapped admin authentication; ignore gracefully if non-bootstrapped
   }
 
   return result;
@@ -691,6 +818,111 @@ export async function deleteLearningResourceFromCloud(id: string): Promise<void>
   }
 }
 
+export async function saveDailyUpdateToCloud(item: DailyUpdateItem): Promise<void> {
+  if (!auth.currentUser) return;
+  await refreshAdminAuthSession(false);
+  const ref = doc(db, 'dailyUpdates', item.id);
+  try {
+    await retryWithExponentialBackoff(async () => {
+      const existing = await getDoc(ref);
+      const createdAt = existing.exists()
+        ? existing.data().createdAt
+        : serverTimestamp();
+
+      const payload: Record<string, unknown> = {
+        id: item.id,
+        title: item.title.slice(0, 200),
+        description: (item.description || '').slice(0, 4000),
+        date: item.date.slice(0, 10),
+        mediaType: item.mediaType,
+        published: Boolean(item.published),
+        createdAt,
+        updatedAt: serverTimestamp(),
+      };
+      if (item.mediaType !== 'none' && item.mediaUrl?.trim()) {
+        payload.mediaUrl = item.mediaUrl.trim().slice(0, 800000);
+      }
+      if (item.mediaType !== 'none' && item.fileName?.trim()) {
+        payload.fileName = item.fileName.trim().slice(0, 240);
+      }
+
+      await setDoc(ref, payload);
+    }, { maxRetries: 3, baseDelayMs: 500, maxDelayMs: 2500 });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, `dailyUpdates/${item.id}`);
+  }
+}
+
+export async function deleteDailyUpdateFromCloud(id: string): Promise<void> {
+  if (!auth.currentUser) return;
+  await refreshAdminAuthSession(false);
+  try {
+    await retryWithExponentialBackoff(
+      () => deleteDoc(doc(db, 'dailyUpdates', id)),
+      { maxRetries: 3, baseDelayMs: 500, maxDelayMs: 2500 },
+    );
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, `dailyUpdates/${id}`);
+  }
+}
+
+export async function submitFeedbackToCloud(input: {
+  fullName: string;
+  email: string;
+  rating: number;
+  feedback: string;
+}): Promise<{ ok: boolean; duplicate?: boolean; error?: string; id?: string }> {
+  const validation = validateFeedbackInput(input);
+  if (!validation.valid || !validation.normalizedEmail || !validation.rating) {
+    return { ok: false, error: validation.error || 'Please complete all feedback fields.' };
+  }
+
+  const emailHash = await hashNormalizedEmail(validation.normalizedEmail);
+  try {
+    await retryWithExponentialBackoff(
+      () =>
+        setDoc(doc(db, 'feedbackRatings', emailHash), {
+          id: emailHash,
+          fullName: input.fullName.trim().slice(0, 120),
+          email: validation.normalizedEmail!.slice(0, 160),
+          emailHash,
+          rating: validation.rating!,
+          feedback: input.feedback.trim().slice(0, 2000),
+          createdAt: serverTimestamp(),
+        }),
+      { maxRetries: 2, baseDelayMs: 450, maxDelayMs: 1800 },
+    );
+    return { ok: true, id: emailHash };
+  } catch (error) {
+    const errText = extractFirebaseErrorText(error).toLowerCase();
+    if (errText.includes('permission-denied') || errText.includes('already-exists')) {
+      return {
+        ok: false,
+        duplicate: true,
+        error:
+          'Feedback and rating have already been submitted with this email address. Duplicate ratings from the same email are not allowed.',
+      };
+    }
+    return {
+      ok: false,
+      error: 'Unable to submit feedback right now due to a connection issue. Please try again.',
+    };
+  }
+}
+
+export async function deleteFeedbackFromCloud(id: string): Promise<void> {
+  if (!auth.currentUser) return;
+  await refreshAdminAuthSession(false);
+  try {
+    await retryWithExponentialBackoff(
+      () => deleteDoc(doc(db, 'feedbackRatings', id)),
+      { maxRetries: 3, baseDelayMs: 500, maxDelayMs: 2500 },
+    );
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, `feedbackRatings/${id}`);
+  }
+}
+
 /**
  * Syncs local data into Cloud Firestore without erasing existing cloud items.
  */
@@ -707,5 +939,8 @@ export async function syncSiteDataToCloudNonDestructive(data: SiteData): Promise
   }
   for (const resource of data.learningHub) {
     await saveLearningResourceToCloud(resource);
+  }
+  for (const update of data.dailyUpdates || []) {
+    await saveDailyUpdateToCloud(update);
   }
 }

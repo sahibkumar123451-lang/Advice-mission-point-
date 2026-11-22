@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useState } from 'react';
 import { AboutSection } from './components/AboutSection';
-import { AdminPanel } from './components/AdminPanel';
+import { AdminPanel, type AdminTab } from './components/AdminPanel';
 import { ContactSection } from './components/ContactSection';
+import { DailyUpdatesSection } from './components/DailyUpdatesSection';
+import { FeedbackRatingSection } from './components/FeedbackRatingSection';
 import { Footer } from './components/Footer';
 import { GallerySection } from './components/GallerySection';
 import { HeroSection } from './components/HeroSection';
@@ -23,22 +25,17 @@ import { DEFAULT_SITE_DATA } from './utils/seedData';
 export default function App() {
   const [siteData, setSiteData] = useState<SiteData>(DEFAULT_SITE_DATA);
   const [adminOpen, setAdminOpen] = useState(false);
-  const [adminInitialTab, setAdminInitialTab] = useState<
-    'coaching' | 'teacher' | 'gallery' | 'hub' | 'enquiries'
-  >('coaching');
+  const [adminInitialTab, setAdminInitialTab] = useState<AdminTab>('coaching');
   const [aiFocusTrigger, setAiFocusTrigger] = useState(0);
   const [aiExternalPrompt, setAiExternalPrompt] = useState<{
     text: string;
     id: number;
   } | null>(null);
 
-  const openAdminTab = useCallback(
-    (tab: 'coaching' | 'teacher' | 'gallery' | 'hub' | 'enquiries' = 'coaching') => {
-      setAdminInitialTab(tab);
-      setAdminOpen(true);
-    },
-    [],
-  );
+  const openAdminTab = useCallback((tab: AdminTab = 'coaching') => {
+    setAdminInitialTab(tab);
+    setAdminOpen(true);
+  }, []);
 
   const loadSiteData = useCallback(async () => {
     let baseData: SiteData = DEFAULT_SITE_DATA;
@@ -59,7 +56,8 @@ export default function App() {
           cloudData.socialLinks ||
           cloudData.teacher ||
           (cloudData.gallery && cloudData.gallery.length > 0) ||
-          (cloudData.learningHub && cloudData.learningHub.length > 0),
+          (cloudData.learningHub && cloudData.learningHub.length > 0) ||
+          (cloudData.dailyUpdates && cloudData.dailyUpdates.length > 0),
       );
       if (hasCloudData) {
         setSiteData({
@@ -74,6 +72,10 @@ export default function App() {
             cloudData.learningHub && cloudData.learningHub.length > 0
               ? cloudData.learningHub
               : baseData.learningHub,
+          dailyUpdates:
+            cloudData.dailyUpdates && cloudData.dailyUpdates.length > 0
+              ? cloudData.dailyUpdates
+              : baseData.dailyUpdates,
         });
         return;
       }
@@ -108,7 +110,7 @@ export default function App() {
   }, []);
 
   return (
-    <div className="min-h-screen flex flex-col bg-[#FAF9F6] text-slate-900">
+    <div className="min-h-screen flex flex-col bg-[#09090B] text-slate-100">
       <Navbar
         coachingName={siteData.coaching.name}
         onAskDoubtClick={() => jumpToMissionAI()}
@@ -124,6 +126,11 @@ export default function App() {
         <AboutSection coaching={siteData.coaching} />
 
         <TeacherProfileSection teacher={siteData.teacher} />
+
+        <DailyUpdatesSection
+          updates={siteData.dailyUpdates || []}
+          onManageUpdatesClick={() => openAdminTab('updates')}
+        />
 
         <LearningHubSection
           resources={siteData.learningHub}
@@ -144,6 +151,8 @@ export default function App() {
           items={siteData.gallery}
           onManageMediaClick={() => openAdminTab('gallery')}
         />
+
+        <FeedbackRatingSection />
 
         <ContactSection
           coaching={siteData.coaching}

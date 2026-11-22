@@ -88,18 +88,18 @@ export function ContactSection({ coaching, socialLinks }: ContactSectionProps) {
   }
 
   return (
-    <section id="contact" className="py-16 lg:py-24 bg-[#FAF9F6]">
+    <section id="contact" className="py-16 lg:py-24 bg-[#09090B]">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-12">
           {/* Left Column: Social Media & Coaching Address */}
           <div className="lg:col-span-6">
-            <p className="text-sm font-semibold text-amber-700">
+            <p className="text-sm font-semibold text-red-400 uppercase tracking-wide">
               Connect With Us
             </p>
-            <h2 className="mt-2 text-3xl sm:text-4xl font-bold tracking-tight text-slate-950 text-balance">
+            <h2 className="mt-2 text-3xl sm:text-4xl font-bold tracking-tight text-white text-balance">
               Social Media &amp; Contact Information
             </h2>
-            <p className="mt-3 text-base text-slate-600 leading-relaxed">
+            <p className="mt-3 text-base text-slate-300 leading-relaxed">
               Reach Advice Mission Point in {coaching.address}, or connect through our official social channels.
             </p>
 
@@ -113,17 +113,17 @@ export function ContactSection({ coaching, socialLinks }: ContactSectionProps) {
                     href={social.href}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="flex items-center justify-between gap-3 p-4 rounded-xl bg-white border border-slate-200 hover:border-amber-500 transition-colors"
+                    className="flex items-center justify-between gap-3 p-4 rounded-xl bg-[#111318] border border-zinc-800 hover:border-blue-500/60 transition-colors"
                   >
                     <div className="flex items-center gap-3 min-w-0">
-                      <div className="w-10 h-10 rounded-lg bg-slate-900 text-amber-400 flex items-center justify-center shrink-0">
+                      <div className="w-10 h-10 rounded-lg bg-[#09090B] border border-zinc-700 text-blue-400 flex items-center justify-center shrink-0">
                         <Icon className="w-5 h-5" aria-hidden="true" />
                       </div>
                       <div className="min-w-0">
-                        <div className="text-sm font-bold text-slate-950">
+                        <div className="text-sm font-bold text-white">
                           {social.name}
                         </div>
-                        <div className="text-xs text-slate-600 truncate">
+                        <div className="text-xs text-slate-400 truncate">
                           {social.subtitle}
                         </div>
                       </div>
@@ -135,23 +135,23 @@ export function ContactSection({ coaching, socialLinks }: ContactSectionProps) {
             </div>
 
             {/* Direct Address & Maps */}
-            <div className="mt-7 rounded-2xl bg-white border border-slate-200 p-6 space-y-4">
+            <div className="mt-7 rounded-2xl bg-[#111318] border border-zinc-800 p-6 space-y-4">
               <div className="flex items-start gap-3">
-                <MapPin className="w-5 h-5 text-amber-700 shrink-0 mt-0.5" aria-hidden="true" />
+                <MapPin className="w-5 h-5 text-red-400 shrink-0 mt-0.5" aria-hidden="true" />
                 <div>
-                  <div className="text-sm font-bold text-slate-950">Coaching Location</div>
-                  <div className="text-sm text-slate-700 mt-0.5">{coaching.address}</div>
+                  <div className="text-sm font-bold text-white">Coaching Location</div>
+                  <div className="text-sm text-slate-300 mt-0.5">{coaching.address}</div>
                 </div>
               </div>
 
               <div className="flex items-start gap-3">
-                <Phone className="w-5 h-5 text-amber-700 shrink-0 mt-0.5" aria-hidden="true" />
+                <Phone className="w-5 h-5 text-blue-400 shrink-0 mt-0.5" aria-hidden="true" />
                 <div>
-                  <div className="text-sm font-bold text-slate-950">Phone &amp; Email</div>
-                  <div className="text-sm text-slate-700 mt-0.5 font-mono tabular-nums">
+                  <div className="text-sm font-bold text-white">Phone &amp; Email</div>
+                  <div className="text-sm text-slate-300 mt-0.5 font-mono tabular-nums">
                     {coaching.phone}
                   </div>
-                  <div className="text-sm text-slate-600">{coaching.email}</div>
+                  <div className="text-sm text-slate-400">{coaching.email}</div>
                 </div>
               </div>
 
@@ -160,7 +160,7 @@ export function ContactSection({ coaching, socialLinks }: ContactSectionProps) {
                   href={coaching.googleMapsUrl}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="inline-flex items-center gap-2 text-sm font-semibold text-amber-800 hover:underline underline-offset-4"
+                  className="inline-flex items-center gap-2 text-sm font-semibold text-blue-400 hover:text-blue-300 hover:underline underline-offset-4"
                 >
                   <span>View Coaching Location on Google Maps</span>
                   <ExternalLink className="w-4 h-4" aria-hidden="true" />
@@ -171,11 +171,11 @@ export function ContactSection({ coaching, socialLinks }: ContactSectionProps) {
 
           {/* Right Column: Enquiry Form */}
           <div className="lg:col-span-6">
-            <div className="rounded-2xl bg-white border border-slate-200 p-6 sm:p-8">
-              <h3 className="text-xl font-bold text-slate-950">
+            <div className="rounded-2xl bg-[#111318] border border-zinc-800 p-6 sm:p-8 shadow-xl">
+              <h3 className="text-xl font-bold text-white">
                 Admission &amp; General Enquiry
               </h3>
-              <p className="mt-1 text-sm text-slate-600">
+              <p className="mt-1 text-sm text-slate-400">
                 Parents and students can send an enquiry for Class 1 to Class 12 batches or timings.
               </p>
 
@@ -183,7 +183,7 @@ export function ContactSection({ coaching, socialLinks }: ContactSectionProps) {
                 <div>
                   <label
                     htmlFor="enquiry-name"
-                    className="block text-sm font-semibold text-slate-800 mb-1.5"
+                    className="block text-sm font-semibold text-slate-200 mb-1.5"
                   >
                     Student or Parent Name
                   </label>
@@ -193,14 +193,14 @@ export function ContactSection({ coaching, socialLinks }: ContactSectionProps) {
                     value={studentName}
                     onChange={(e) => setStudentName(e.target.value)}
                     placeholder="Enter full name"
-                    className="w-full px-3.5 py-2.5 text-sm bg-[#FAF9F6] border border-slate-300 rounded-lg text-slate-900 focus:outline-none focus:ring-2 focus:ring-amber-600"
+                    className="w-full px-3.5 py-2.5 text-sm bg-[#09090B] border border-zinc-700 rounded-lg text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
                   />
                 </div>
 
                 <div>
                   <label
                     htmlFor="enquiry-contact"
-                    className="block text-sm font-semibold text-slate-800 mb-1.5"
+                    className="block text-sm font-semibold text-slate-200 mb-1.5"
                   >
                     Mobile Number or Email
                   </label>
@@ -210,14 +210,14 @@ export function ContactSection({ coaching, socialLinks }: ContactSectionProps) {
                     value={phoneOrEmail}
                     onChange={(e) => setPhoneOrEmail(e.target.value)}
                     placeholder="e.g. +91 98000 00000"
-                    className="w-full px-3.5 py-2.5 text-sm bg-[#FAF9F6] border border-slate-300 rounded-lg text-slate-900 focus:outline-none focus:ring-2 focus:ring-amber-600"
+                    className="w-full px-3.5 py-2.5 text-sm bg-[#09090B] border border-zinc-700 rounded-lg text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
                   />
                 </div>
 
                 <div>
                   <label
                     htmlFor="enquiry-message"
-                    className="block text-sm font-semibold text-slate-800 mb-1.5"
+                    className="block text-sm font-semibold text-slate-200 mb-1.5"
                   >
                     Message
                   </label>
@@ -227,12 +227,12 @@ export function ContactSection({ coaching, socialLinks }: ContactSectionProps) {
                     value={message}
                     onChange={(e) => setMessage(e.target.value)}
                     placeholder="Ask about batch timings, admission, or coaching guidance..."
-                    className="w-full px-3.5 py-2.5 text-sm bg-[#FAF9F6] border border-slate-300 rounded-lg text-slate-900 focus:outline-none focus:ring-2 focus:ring-amber-600"
+                    className="w-full px-3.5 py-2.5 text-sm bg-[#09090B] border border-zinc-700 rounded-lg text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
                   />
                 </div>
 
                 {error && (
-                  <p role="alert" className="text-sm text-red-700 font-medium">
+                  <p role="alert" className="text-sm text-red-400 font-medium">
                     {error}
                   </p>
                 )}
@@ -240,9 +240,9 @@ export function ContactSection({ coaching, socialLinks }: ContactSectionProps) {
                 {submitted && (
                   <div
                     role="status"
-                    className="flex items-center gap-2 p-3 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-900 text-sm font-medium"
+                    className="flex items-center gap-2 p-3 rounded-lg bg-blue-950/50 border border-blue-500/40 text-blue-200 text-sm font-medium"
                   >
-                    <CheckCircle2 className="w-4 h-4 shrink-0" aria-hidden="true" />
+                    <CheckCircle2 className="w-4 h-4 text-blue-400 shrink-0" aria-hidden="true" />
                     <span>Enquiry submitted. Advice Mission Point will respond shortly.</span>
                   </div>
                 )}
@@ -250,7 +250,7 @@ export function ContactSection({ coaching, socialLinks }: ContactSectionProps) {
                 <button
                   type="submit"
                   disabled={submitting}
-                  className="inline-flex items-center justify-center gap-2 w-full sm:w-auto px-6 py-2.5 text-sm font-semibold text-white bg-slate-900 hover:bg-slate-800 disabled:opacity-60 rounded-lg transition-colors cursor-pointer"
+                  className="inline-flex items-center justify-center gap-2 w-full sm:w-auto px-6 py-2.5 text-sm font-semibold text-white bg-blue-600 hover:bg-blue-500 disabled:opacity-60 rounded-lg transition-colors cursor-pointer"
                 >
                   <span>{submitting ? 'Sending...' : 'Submit Enquiry'}</span>
                   <Send className="w-4 h-4" aria-hidden="true" />

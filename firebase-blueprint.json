@@ -91,6 +91,39 @@
       },
       "required": ["id", "title", "topicArea", "published", "updatedAt"]
     },
+    "DailyUpdate": {
+      "title": "DailyUpdate",
+      "description": "Chronological coaching daily updates supporting photos, videos, PDFs, or text notices.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "title": { "type": "string", "minLength": 2, "maxLength": 200 },
+        "description": { "type": "string", "maxLength": 4000 },
+        "date": { "type": "string", "minLength": 10, "maxLength": 10, "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+        "mediaType": { "type": "string", "enum": ["none", "image", "video", "pdf"] },
+        "mediaUrl": { "type": "string", "maxLength": 800000 },
+        "fileName": { "type": "string", "maxLength": 240 },
+        "published": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "title", "date", "mediaType", "published", "createdAt", "updatedAt"]
+    },
+    "FeedbackRating": {
+      "title": "FeedbackRating",
+      "description": "User rating and feedback keyed by deterministic SHA-256 hash of normalized lowercase email to enforce one submission per email and isolate PII to Admins only.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 64, "maxLength": 64, "pattern": "^[a-f0-9]{64}$" },
+        "fullName": { "type": "string", "minLength": 2, "maxLength": 120 },
+        "email": { "type": "string", "minLength": 5, "maxLength": 160, "pattern": "^[^@\\s]+@[^@\\s]+\\.[^@\\s]{2,}$" },
+        "emailHash": { "type": "string", "minLength": 64, "maxLength": 64, "pattern": "^[a-f0-9]{64}$" },
+        "rating": { "type": "integer" },
+        "feedback": { "type": "string", "minLength": 5, "maxLength": 2000 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "fullName", "email", "emailHash", "rating", "feedback", "createdAt"]
+    },
     "AdminUser": {
       "title": "AdminUser",
       "description": "Authorized coaching administrator document keyed by Firebase Auth UID.",
@@ -123,6 +156,14 @@
     "/learningHubItems/{itemId}": {
       "schema": { "$ref": "#/entities/LearningResource" },
       "description": "Published and draft study resources and PDFs in the Learning Hub."
+    },
+    "/dailyUpdates/{updateId}": {
+      "schema": { "$ref": "#/entities/DailyUpdate" },
+      "description": "Chronological coaching daily updates with optional photos, videos, or PDFs."
+    },
+    "/feedbackRatings/{emailHash}": {
+      "schema": { "$ref": "#/entities/FeedbackRating" },
+      "description": "Private user feedback and 1-5 star ratings readable and deletable only by verified Admins; one creation allowed per normalized email hash."
     },
     "/admins/{uid}": {
       "schema": { "$ref": "#/entities/AdminUser" },
