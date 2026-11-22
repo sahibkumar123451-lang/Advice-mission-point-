@@ -30,21 +30,11 @@ export function Navbar({
           href="#home"
           className="flex items-center gap-2.5 text-lg font-bold tracking-tight text-slate-900 whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-600 rounded-md px-1"
         >
-          <svg
-            width="28"
-            height="28"
-            viewBox="0 0 32 32"
-            fill="none"
-            aria-hidden="true"
-            className="shrink-0"
-          >
-            <rect width="32" height="32" rx="8" fill="#0F172A" />
-            <path
-              d="M8 22L16 8L24 22H20.4L16 14.2L11.6 22H8Z"
-              fill="#F59E0B"
-            />
-            <circle cx="16" cy="21" r="2.2" fill="#FFFFFF" />
-          </svg>
+          <img
+            src="/assets/aistudio/file_0000000044288211baf6fb7b37cffbd8_c0748120.png"
+            alt={`${coachingName} profile logo`}
+            className="w-9 h-9 rounded-full object-cover border border-amber-200 bg-white shrink-0"
+          />
           <span>{coachingName}</span>
         </a>
 

@@ -30,13 +30,21 @@ export function HeroSection({ coaching, onAskQuestionClick }: HeroSectionProps) 
               <span>Class 1 to Class 12</span>
             </div>
 
-            <h1 className="text-4xl sm:text-5xl lg:text-[3.35rem] font-extrabold tracking-tight text-slate-950 leading-[1.08] text-balance">
-              {coaching.name}
-            </h1>
-
-            <p className="mt-3 text-xl sm:text-2xl font-semibold text-amber-700 tracking-tight">
-              {coaching.tagline}
-            </p>
+            <div className="flex items-center gap-4">
+              <img
+                src="/assets/aistudio/file_0000000044288211baf6fb7b37cffbd8_c0748120.png"
+                alt={`${coaching.name} official coaching profile emblem`}
+                className="w-16 h-16 sm:w-20 sm:h-20 rounded-full object-cover border-2 border-amber-200 bg-white shadow-sm shrink-0"
+              />
+              <div>
+                <h1 className="text-3xl sm:text-5xl lg:text-[3.2rem] font-extrabold tracking-tight text-slate-950 leading-[1.08] text-balance">
+                  {coaching.name}
+                </h1>
+                <p className="mt-1.5 text-lg sm:text-2xl font-semibold text-amber-700 tracking-tight">
+                  {coaching.tagline}
+                </p>
+              </div>
+            </div>
 
             <p className="mt-5 text-base sm:text-lg text-slate-700 leading-relaxed max-w-xl">
               {coaching.welcomeHeadline}
