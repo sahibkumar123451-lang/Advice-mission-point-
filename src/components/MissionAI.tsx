@@ -52,7 +52,7 @@ function createWelcomeMessage(coachingName: string): ChatMessage {
   return {
     id: 'mission-ai-welcome',
     role: 'assistant',
-    text: `Namaste! I am **Mission AI**, the official learning assistant of **${coachingName}** (guided by **Surendra Sir**).\n\nAsk any Class 1 to 12 study doubt in Mathematics, Science, English, or Social Studies, or ask about our coaching batches and timings — in Hindi, English, or Hinglish.`,
+    text: `नमस्ते!\nI am **Mission AI** for **${coachingName}** (Owner: **Surendra Sir**). Ask any study doubt or coaching question.`,
   };
 }
 
