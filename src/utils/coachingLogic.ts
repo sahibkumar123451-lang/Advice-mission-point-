@@ -674,7 +674,7 @@ export function formatFriendlyAiError(rawMessage: string): string {
 
 export const ADMIN_PASSCODE_SALT = 'amp-admin-rauli-v1';
 export const ADMIN_PASSCODE_HASH =
-  'a2d2db0c8d0a87d5a8b01020a07625d85d36929649ecae289197430b85a41013';
+  '37bf71c059da69581cfea52fa79cb0a43026cc8c86c02fa985640eda3d4ad6b4';
 
 export async function verifyAdminPasscodeHash(input: string): Promise<boolean> {
   if (!input || !globalThis.crypto?.subtle) {
