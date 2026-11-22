@@ -54,7 +54,7 @@ export function AboutSection({ coaching }: AboutSectionProps) {
                   03. Continuous Doubt Help
                 </h3>
                 <p className="mt-1.5 text-sm text-slate-600 leading-relaxed">
-                  Direct classroom mentorship supported by dedicated practice sessions and curated Learning Hub notes.
+                  Direct classroom mentorship supported by Mission AI and our curated Learning Hub notes whenever you study at home.
                 </p>
               </div>
             </div>

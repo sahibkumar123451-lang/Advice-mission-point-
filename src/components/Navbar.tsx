@@ -3,13 +3,13 @@ import { Menu, X } from 'lucide-react';
 
 interface NavbarProps {
   coachingName: string;
-  onContactClick: () => void;
+  onAskDoubtClick: () => void;
   onOpenAdminClick: () => void;
 }
 
 export function Navbar({
   coachingName,
-  onContactClick,
+  onAskDoubtClick,
   onOpenAdminClick,
 }: NavbarProps) {
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -17,8 +17,9 @@ export function Navbar({
   const navItems = [
     { label: 'About', href: '#about' },
     { label: 'Faculty', href: '#faculty' },
-    { label: 'Gallery', href: '#gallery' },
     { label: 'Learning Hub', href: '#learning-hub' },
+    { label: 'Gallery', href: '#gallery' },
+    { label: 'Contact', href: '#contact' },
   ];
 
   return (
@@ -50,7 +51,7 @@ export function Navbar({
         {/* Zone 2: Concise single-line navigation links */}
         <nav
           aria-label="Primary navigation"
-          className="hidden md:flex items-center gap-7 text-sm font-medium text-slate-600"
+          className="hidden md:flex items-center gap-6 text-sm font-medium text-slate-600"
         >
           {navItems.map((item) => (
             <a
@@ -74,10 +75,10 @@ export function Navbar({
         <div className="flex items-center gap-3 shrink-0">
           <button
             type="button"
-            onClick={onContactClick}
+            onClick={onAskDoubtClick}
             className="hidden sm:inline-flex items-center justify-center px-4 py-2 text-sm font-semibold text-white bg-slate-900 hover:bg-slate-800 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-600 focus-visible:ring-offset-2"
           >
-            Enquire Now
+            Ask Mission AI
           </button>
 
           <button
@@ -120,11 +121,11 @@ export function Navbar({
               type="button"
               onClick={() => {
                 setMobileOpen(false);
-                onContactClick();
+                onAskDoubtClick();
               }}
               className="w-full py-2.5 px-4 text-sm font-semibold text-white bg-slate-900 hover:bg-slate-800 rounded-lg cursor-pointer"
             >
-              Enquire Now
+              Ask Mission AI
             </button>
           </div>
         </div>

@@ -5,11 +5,13 @@ import { filterLearningResources, formatDisplayDate } from '../utils/coachingLog
 
 interface LearningHubSectionProps {
   resources: LearningResource[];
+  onAskAIAboutTopic: (topicTitle: string) => void;
   onManageHubClick?: () => void;
 }
 
 export function LearningHubSection({
   resources,
+  onAskAIAboutTopic,
   onManageHubClick,
 }: LearningHubSectionProps) {
   const [searchQuery, setSearchQuery] = useState('');
@@ -175,12 +177,13 @@ export function LearningHubSection({
                     <ArrowUpRight className="w-4 h-4" aria-hidden="true" />
                   </button>
 
-                  <a
-                    href="#contact"
-                    className="text-xs font-semibold text-amber-800 hover:underline underline-offset-4"
+                  <button
+                    type="button"
+                    onClick={() => onAskAIAboutTopic(item.title)}
+                    className="text-xs font-semibold text-amber-800 hover:underline underline-offset-4 cursor-pointer"
                   >
-                    Ask Teacher
-                  </a>
+                    Ask Mission AI
+                  </button>
                 </div>
               </article>
             ))}
@@ -285,6 +288,17 @@ export function LearningHubSection({
             )}
 
             <div className="mt-6 flex flex-wrap items-center justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => {
+                  const title = activeResource.title;
+                  setActiveResource(null);
+                  onAskAIAboutTopic(title);
+                }}
+                className="px-4 py-2 text-sm font-semibold text-amber-900 bg-amber-100 hover:bg-amber-200 rounded-lg cursor-pointer"
+              >
+                Ask Mission AI About This Topic
+              </button>
               <button
                 type="button"
                 onClick={() => setActiveResource(null)}

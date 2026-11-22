@@ -609,7 +609,7 @@ export async function executeMultiModelWithFallback<T, R extends MultiModelRoute
 export function formatFriendlyAiError(rawMessage: string): string {
   const lower = rawMessage.toLowerCase();
   if (lower.includes('api_key_invalid') || lower.includes('permission_denied') || lower.includes('403')) {
-    return 'Gemini API key needs attention in Settings > Secrets before Advice Mission AI can answer.';
+    return 'Gemini API key needs attention in Settings > Secrets before Mission AI can answer.';
   }
   if (
     lower.includes('resource_exhausted') ||

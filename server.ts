@@ -4,6 +4,7 @@ import path from 'path';
 import crypto from 'crypto';
 import express from 'express';
 import type { Request, Response, NextFunction } from 'express';
+import { GoogleGenAI, ThinkingLevel } from '@google/genai';
 import type {
   CoachingInfo,
   EnquiryItem,
@@ -16,9 +17,13 @@ import type {
 import {
   ADMIN_PASSCODE_HASH,
   ADMIN_PASSCODE_SALT,
+  executeMultiModelWithFallback,
+  formatFriendlyAiError,
   isPdfFileOrUrl,
+  isTransientGeminiApiError,
   isVideoFileOrUrl,
   mergeSiteDataPreserveExisting,
+  normalizeAiConversationHistory,
   normalizeExternalUrl,
   normalizeSafeMediaOrExternalUrl,
   normalizeWhatsAppUrl,
@@ -27,6 +32,7 @@ import {
   validateGalleryInput,
   validateLearningResourceInput,
   validateTeacherProfile,
+  type MultiModelRouteSpec,
 } from './src/utils/coachingLogic.ts';
 import { DEFAULT_SITE_DATA } from './src/utils/seedData.ts';
 
@@ -92,6 +98,21 @@ function requireAdmin(req: Request, res: Response, next: NextFunction) {
     return;
   }
   next();
+}
+
+function getGeminiClient(): GoogleGenAI | null {
+  const apiKey = process.env.GEMINI_API_KEY?.trim();
+  if (!apiKey || apiKey === 'MY_GEMINI_API_KEY') {
+    return null;
+  }
+  return new GoogleGenAI({
+    apiKey,
+    httpOptions: {
+      headers: {
+        'User-Agent': 'aistudio-build',
+      },
+    },
+  });
 }
 
 function isSupportedMediaUpload(filename: string, mimeType: string): boolean {
@@ -170,6 +191,439 @@ async function startServer() {
     writeStore(store);
     res.status(201).json({ ok: true, enquiry });
   });
+
+  function buildMissionAiPromptContext(
+    messages: Array<{ role?: string; text?: string }> | undefined,
+    languagePreference?: 'bilingual' | 'english' | 'hindi',
+  ) {
+    if (!Array.isArray(messages) || messages.length === 0) {
+      return { error: 'Please enter a question or doubt first.' };
+    }
+    const latest = messages[messages.length - 1];
+    if (!latest?.text?.trim()) {
+      return { error: 'Question cannot be empty.' };
+    }
+    const normalizedTurns = normalizeAiConversationHistory(messages);
+    if (normalizedTurns.length === 0) {
+      return { error: 'Please enter a valid question or doubt first.' };
+    }
+
+    const store = readStore();
+    const publishedTopics = store.learningHub
+      .filter((item) => item.published)
+      .slice(0, 8)
+      .map((item) => `${item.title} (${item.topicArea})`)
+      .join('; ');
+
+    const langDirective =
+      languagePreference === 'hindi'
+        ? 'Respond primarily in simple, clear Hindi (Devanagari) with key technical terms in English brackets.'
+        : languagePreference === 'english'
+          ? 'Respond in simple, clear student-friendly English, adding brief Hindi meaning for difficult terms when helpful.'
+          : 'Respond in clear, simple bilingual Hindi and English (easy-to-read English paired with simple Hindi explanation, or Hinglish/Devanagari where natural) so school students from Class 1 to 12 understand effortlessly.';
+
+    const systemInstruction = `You are "Mission AI", the official AI learning assistant for the coaching website "Advice Mission Point".
+
+Official Website Knowledge Base (Always use these exact facts when asked about the coaching centre, owner, founder, timings, or assistant):
+- Website / Institute Name: ${store.coaching.name || 'Advice Mission Point'}
+- Tagline: "${store.coaching.tagline || 'To Struggle, Take Success.'}"
+- Owner / Founder & Lead Educator: Surendra Sir
+- Assistant Name: Mission AI
+- Location / Address: ${store.coaching.address || 'Ramauli, Darbhanga, Bihar, India 847101'}
+- Classes Covered: ${store.teacher.classesTaught || 'Class 1 to Class 12'}
+- Class & Office Hours: ${store.coaching.officeHours || 'Mon – Sat · 6:30 AM – 6:30 PM'}
+- Subjects Taught: ${(store.teacher.subjectsTaught || []).join(', ') || 'Mathematics, Science (Physics, Chemistry, Biology), English Grammar & Literature, Social Studies'}
+- Contact Email: ${store.coaching.email || 'contact@advicemissionpoint.in'}
+- Phone: ${store.coaching.phone || 'Available in Contact section'}
+- Available Learning Hub Topics: ${publishedTopics || 'Newton Laws of Motion, Algebraic Identities, English Tenses, Photosynthesis'}
+
+Rules:
+- If the user asks who you are, introduce yourself as "Mission AI", the official AI assistant of Advice Mission Point (founded/owned by Surendra Sir).
+- If the user asks who owns Advice Mission Point or who founded it, state clearly that **Surendra Sir** is the Owner / Founder & Lead Educator of Advice Mission Point.
+- Never ask the student to select a class or subject before answering. Answer any academic doubt or institute question directly and warmly.
+- ${langDirective}
+- For study/academic doubts, keep answers fast, crisp, and focused (around 80-160 words unless solving a multi-step numerical) using plain Unicode math symbols (×, ÷, ², √) instead of LaTeX $ dollar signs:
+  1. **Short Answer (संक्षिप्त उत्तर):** 1–2 crisp sentences giving the direct answer.
+  2. **Simple Explanation (सरल व्याख्या):** Clear step-by-step concept explanation using everyday examples.
+  3. **Key Takeaway / Formula (मुख्य बिंदु):** A quick memory tip, formula, or practice hint when relevant.`;
+
+    return { normalizedTurns, systemInstruction };
+  }
+
+  const MISSION_AI_ROUTES: MultiModelRouteSpec[] = [
+    {
+      model: 'gemini-3.1-flash-lite',
+      label: 'Primary Flash Lite',
+      thinkingLevel: 'MINIMAL',
+      useCompactLiteParams: true,
+      timeoutMs: 12000,
+    },
+    {
+      model: 'gemini-4-hydrogen',
+      label: 'Secondary Flash',
+      thinkingLevel: 'LOW',
+      useCompactLiteParams: false,
+      timeoutMs: 15000,
+    },
+  ];
+
+  let stickyHealthyModel: string | null = null;
+  let stickyHealthyUpdatedAt = 0;
+  const STICKY_HEALTH_TTL_MS = 60_000;
+
+  function getOrderedMissionAiRoutes(): MultiModelRouteSpec[] {
+    if (
+      stickyHealthyModel &&
+      Date.now() - stickyHealthyUpdatedAt < STICKY_HEALTH_TTL_MS
+    ) {
+      const preferred = MISSION_AI_ROUTES.find((r) => r.model === stickyHealthyModel);
+      if (preferred) {
+        return [preferred, ...MISSION_AI_ROUTES.filter((r) => r.model !== stickyHealthyModel)];
+      }
+    }
+    return MISSION_AI_ROUTES;
+  }
+
+  function recordHealthyMissionAiModel(model: string) {
+    stickyHealthyModel = model;
+    stickyHealthyUpdatedAt = Date.now();
+  }
+
+  function buildGeminiConfig(
+    route: MultiModelRouteSpec,
+    systemInstruction: string,
+    abortSignal?: AbortSignal,
+  ) {
+    const level =
+      route.thinkingLevel === 'MINIMAL' ? ThinkingLevel.MINIMAL : ThinkingLevel.LOW;
+    if (route.useCompactLiteParams) {
+      return {
+        systemInstruction,
+        thinkingConfig: { thinkingLevel: level },
+        temperature: 0.5,
+        maxOutputTokens: 512,
+        abortSignal,
+      };
+    }
+    return {
+      systemInstruction,
+      thinkingConfig: { thinkingLevel: level },
+      abortSignal,
+    };
+  }
+
+  async function runWithAbortTimeout<T>(
+    timeoutMs: number,
+    task: (controller: AbortController, clearInitialTimeout: () => void) => Promise<T>,
+  ): Promise<T> {
+    const controller = new AbortController();
+    let timedOut = false;
+    let timer: ReturnType<typeof setTimeout> | undefined = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, timeoutMs);
+
+    const clearInitialTimeout = () => {
+      if (timer) {
+        clearTimeout(timer);
+        timer = undefined;
+      }
+    };
+
+    try {
+      return await Promise.race([
+        task(controller, clearInitialTimeout),
+        new Promise<never>((_resolve, reject) => {
+          controller.signal.addEventListener(
+            'abort',
+            () => {
+              reject(
+                new Error(
+                  timedOut
+                    ? 'Request timeout (504) while waiting for AI model'
+                    : 'Request aborted',
+                ),
+              );
+            },
+            { once: true },
+          );
+        }),
+      ]);
+    } finally {
+      clearInitialTimeout();
+    }
+  }
+
+  // Server-side GEMINI_API_KEY verification & optional live communication probe (never leaks secret)
+  app.get('/api/mission-ai/health', async (req: Request, res: Response) => {
+    const rawKey = process.env.GEMINI_API_KEY?.trim() || '';
+    const hasConfiguredKey = Boolean(rawKey && rawKey !== 'MY_GEMINI_API_KEY');
+    if (!hasConfiguredKey) {
+      res.status(503).json({
+        configured: false,
+        assistant: 'Mission AI',
+        error: 'GEMINI_API_KEY is not configured in server environment.',
+      });
+      return;
+    }
+
+    if (req.query.probe !== '1') {
+      res.json({
+        configured: true,
+        assistant: 'Mission AI',
+        website: 'Advice Mission Point',
+        owner: 'Surendra Sir',
+        models: MISSION_AI_ROUTES.map((r) => r.model),
+      });
+      return;
+    }
+
+    const ai = getGeminiClient()!;
+    const probeResults: Array<{
+      model: string;
+      ok: boolean;
+      elapsedMs: number;
+      preview?: string;
+      error?: string;
+    }> = [];
+
+    for (const route of MISSION_AI_ROUTES) {
+      const started = Date.now();
+      try {
+        const result = await runWithAbortTimeout(15000, (controller) =>
+          ai.models.generateContent({
+            model: route.model,
+            contents: 'Who is the owner of Advice Mission Point? Reply in 1 short sentence.',
+            config: buildGeminiConfig(
+              route,
+              'You are Mission AI, assistant of Advice Mission Point owned by Surendra Sir.',
+              controller.signal,
+            ),
+          }),
+        );
+        probeResults.push({
+          model: route.model,
+          ok: Boolean(result.text?.trim()),
+          elapsedMs: Date.now() - started,
+          preview: result.text?.trim().slice(0, 140),
+        });
+      } catch (err) {
+        probeResults.push({
+          model: route.model,
+          ok: false,
+          elapsedMs: Date.now() - started,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
+    const anyOk = probeResults.some((r) => r.ok);
+    res.status(anyOk ? 200 : 503).json({
+      configured: true,
+      liveConnected: anyOk,
+      assistant: 'Mission AI',
+      probeResults,
+    });
+  });
+
+  const handleMissionAiStream = async (req: Request, res: Response) => {
+    const { messages, languagePreference } = req.body as {
+      messages?: Array<{ role?: 'user' | 'assistant'; text?: string }>;
+      languagePreference?: 'bilingual' | 'english' | 'hindi';
+    };
+
+    const ctx = buildMissionAiPromptContext(messages, languagePreference);
+    if ('error' in ctx) {
+      res.status(400).json({ error: ctx.error });
+      return;
+    }
+
+    const ai = getGeminiClient();
+    if (!ai) {
+      res.status(503).json({
+        error:
+          'Mission AI is ready once GEMINI_API_KEY is configured in Settings > Secrets.',
+      });
+      return;
+    }
+
+    res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.flushHeaders?.();
+
+    let clientDisconnected = false;
+    res.on('close', () => {
+      if (!res.writableEnded) {
+        clientDisconnected = true;
+      }
+    });
+
+    const sendEvent = (payload: Record<string, unknown>) => {
+      if (!res.writableEnded && !clientDisconnected) {
+        res.write(`data: ${JSON.stringify(payload)}\n\n`);
+      }
+    };
+
+    let emittedAny = false;
+    const routes = getOrderedMissionAiRoutes();
+
+    try {
+      const { route: winningRoute } = await executeMultiModelWithFallback(
+        async (route, attemptIdx) => {
+          if (clientDisconnected || res.writableEnded) {
+            return;
+          }
+
+          const startedAt = Date.now();
+          try {
+            await runWithAbortTimeout(route.timeoutMs, async (controller, clearInitialTimeout) => {
+              const stream = await ai.models.generateContentStream({
+                model: route.model,
+                contents: ctx.normalizedTurns,
+                config: buildGeminiConfig(route, ctx.systemInstruction, controller.signal),
+              });
+
+              for await (const chunk of stream) {
+                if (clientDisconnected || res.writableEnded) {
+                  controller.abort();
+                  break;
+                }
+                const delta = chunk.text;
+                if (delta) {
+                  if (!emittedAny) {
+                    clearInitialTimeout();
+                    emittedAny = true;
+                  }
+                  sendEvent({ delta });
+                }
+              }
+            });
+
+            if (!emittedAny && !clientDisconnected) {
+              throw new Error('Empty model response.');
+            }
+          } catch (attemptErr) {
+            const elapsed = Date.now() - startedAt;
+            const detail =
+              attemptErr instanceof Error ? attemptErr.message : String(attemptErr);
+            console.warn(
+              `[MissionAI] stream attempt=${attemptIdx + 1} model=${route.model} failed in ${elapsed}ms: ${detail.slice(0, 180)}`,
+            );
+            throw attemptErr;
+          }
+        },
+        {
+          routes,
+          maxAttempts: 4,
+          baseDelayMs: 450,
+          maxDelayMs: 2200,
+          shouldAbort: () => emittedAny || clientDisconnected || res.writableEnded,
+          onStatus: ({ reason }) => {
+            sendEvent({
+              status: reason,
+              message:
+                reason === 'failover'
+                  ? 'Primary AI is busy — switching seamlessly to backup model...'
+                  : 'High traffic detected — retrying gently in a moment...',
+            });
+          },
+        },
+      );
+
+      recordHealthyMissionAiModel(winningRoute.model);
+      sendEvent({ done: true, model: winningRoute.label });
+      res.end();
+    } catch (err) {
+      if (emittedAny) {
+        sendEvent({ done: true });
+        res.end();
+        return;
+      }
+      const rawMessage =
+        err instanceof Error ? err.message : 'Unable to reach Gemini API right now.';
+      sendEvent({ error: formatFriendlyAiError(rawMessage) });
+      res.end();
+    }
+  };
+
+  const handleMissionAiAsk = async (req: Request, res: Response) => {
+    const { messages, languagePreference } = req.body as {
+      messages?: Array<{ role?: 'user' | 'assistant'; text?: string }>;
+      languagePreference?: 'bilingual' | 'english' | 'hindi';
+    };
+
+    const ctx = buildMissionAiPromptContext(messages, languagePreference);
+    if ('error' in ctx) {
+      res.status(400).json({ error: ctx.error });
+      return;
+    }
+
+    const ai = getGeminiClient();
+    if (!ai) {
+      res.status(503).json({
+        error:
+          'Mission AI is ready once GEMINI_API_KEY is configured in Settings > Secrets.',
+      });
+      return;
+    }
+
+    const routes = getOrderedMissionAiRoutes();
+    try {
+      const { result: answer, route: winningRoute } = await executeMultiModelWithFallback(
+        async (route, attemptIdx) => {
+          const startedAt = Date.now();
+          try {
+            const response = await runWithAbortTimeout(
+              route.timeoutMs,
+              async (controller) =>
+                ai.models.generateContent({
+                  model: route.model,
+                  contents: ctx.normalizedTurns,
+                  config: buildGeminiConfig(route, ctx.systemInstruction, controller.signal),
+                }),
+            );
+
+            const text = response.text?.trim();
+            if (!text) {
+              throw new Error('Empty model response.');
+            }
+            return text;
+          } catch (attemptErr) {
+            const elapsed = Date.now() - startedAt;
+            const detail =
+              attemptErr instanceof Error ? attemptErr.message : String(attemptErr);
+            console.warn(
+              `[MissionAI] ask attempt=${attemptIdx + 1} model=${route.model} failed in ${elapsed}ms: ${detail.slice(0, 180)}`,
+            );
+            throw attemptErr;
+          }
+        },
+        {
+          routes,
+          maxAttempts: 4,
+          baseDelayMs: 450,
+          maxDelayMs: 2200,
+        },
+      );
+
+      recordHealthyMissionAiModel(winningRoute.model);
+      res.json({ answer });
+    } catch (err) {
+      const rawMessage =
+        err instanceof Error ? err.message : 'Unable to reach Gemini API right now.';
+      const statusCode = isTransientGeminiApiError(err) ? 503 : 502;
+      res.status(statusCode).json({
+        error: formatFriendlyAiError(rawMessage),
+      });
+    }
+  };
+
+  app.post('/api/mission-ai/stream', handleMissionAiStream);
+  app.post('/api/mission-ai/ask', handleMissionAiAsk);
+  app.post('/api/ai/stream', handleMissionAiStream);
+  app.post('/api/ai/ask', handleMissionAiAsk);
 
   // Admin Login Verification
   app.post('/api/admin/login', (req: Request, res: Response) => {

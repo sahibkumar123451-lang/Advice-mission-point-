@@ -3,12 +3,14 @@ import type { CoachingInfo, SocialLinks } from '../types/coaching';
 interface FooterProps {
   coaching: CoachingInfo;
   socialLinks: SocialLinks;
+  onAskDoubtClick: () => void;
   onOpenAdminClick: () => void;
 }
 
 export function Footer({
   coaching,
   socialLinks,
+  onAskDoubtClick,
   onOpenAdminClick,
 }: FooterProps) {
   return (
@@ -23,7 +25,7 @@ export function Footer({
               {coaching.tagline}
             </p>
             <p className="mt-3 text-sm text-slate-400 leading-relaxed max-w-sm">
-              {coaching.address} · Class 1 to Class 12 academic guidance, bilingual Learning Hub, and Campus Gallery.
+              {coaching.address} · Class 1 to Class 12 academic guidance, bilingual Learning Hub, Campus Gallery, and Mission AI doubt support.
             </p>
           </div>
 
@@ -40,13 +42,22 @@ export function Footer({
               </a>
             </div>
             <div>
-              <a href="#gallery" className="hover:text-white transition-colors">
-                Photo &amp; Video Gallery
+              <a href="#learning-hub" className="hover:text-white transition-colors">
+                Advice Mission Learning Hub
               </a>
             </div>
             <div>
-              <a href="#learning-hub" className="hover:text-white transition-colors">
-                Advice Mission Learning Hub
+              <button
+                type="button"
+                onClick={onAskDoubtClick}
+                className="hover:text-white transition-colors cursor-pointer"
+              >
+                Mission AI Assistant
+              </button>
+            </div>
+            <div>
+              <a href="#gallery" className="hover:text-white transition-colors">
+                Photo &amp; Video Gallery
               </a>
             </div>
             <div>
