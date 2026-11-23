@@ -2,8 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   applyRealtimeCloudUpdate,
+  buildMissionAiCacheKey,
   buildSiteDataWithDraftEdits,
   clearAdminDraftFromStorage,
+  clearCachedMissionAiResponses,
   computeFeedbackStats,
   detectUploadCategoryAndType,
   executeMultiModelWithFallback,
@@ -16,6 +18,7 @@ import {
   formatFirebaseAdminError,
   formatFriendlyAiError,
   formatTitleFromFilename,
+  getCachedMissionAiResponse,
   getUploadLimitForMediaType,
   getYouTubeEmbedUrl,
   hasDuplicateFeedbackEmail,
@@ -32,6 +35,7 @@ import {
   normalizeWhatsAppUrl,
   retryWithExponentialBackoff,
   saveAdminDraftToStorage,
+  setCachedMissionAiResponse,
   sortDailyUpdatesByDate,
   validateCoachingInfo,
   validateDailyUpdateInput,
@@ -421,17 +425,17 @@ test('buildSiteDataWithDraftEdits and draft storage preserve unsaved local edits
 test('executeMultiModelWithFallback performs instant failover to secondary model on 503/429/timeout and applies backoff on spikes', async () => {
   const routes = [
     {
-      model: 'gemini-4-hydrogen',
-      label: 'Primary Flash',
-      thinkingLevel: 'LOW' as const,
-      useCompactLiteParams: false,
+      model: 'gemini-2.5-flash-lite',
+      label: 'Primary Flash Lite',
+      supportsThinkingLevel: false,
+      useCompactLiteParams: true,
       timeoutMs: 8000,
     },
     {
-      model: 'gemini-3.1-flash-lite',
-      label: 'Secondary Flash Lite',
-      thinkingLevel: 'MINIMAL' as const,
-      useCompactLiteParams: true,
+      model: 'gemini-2.5-flash',
+      label: 'Secondary Flash',
+      supportsThinkingLevel: false,
+      useCompactLiteParams: false,
       timeoutMs: 8000,
     },
   ];
@@ -442,10 +446,10 @@ test('executeMultiModelWithFallback performs instant failover to secondary model
   const res1 = await executeMultiModelWithFallback(
     async (route) => {
       calledModels1.push(route.model);
-      if (route.model === 'gemini-4-hydrogen') {
+      if (route.model === 'gemini-2.5-flash-lite') {
         throw new Error('503 Service Unavailable');
       }
-      return 'Answer from Flash Lite';
+      return 'Answer from Gemini 2.5 Flash';
     },
     {
       routes,
@@ -455,9 +459,9 @@ test('executeMultiModelWithFallback performs instant failover to secondary model
         statuses1.push({ reason: info.reason, delayMs: info.delayMs, nextModel: info.route.model }),
     },
   );
-  assert.equal(res1.result, 'Answer from Flash Lite');
-  assert.equal(res1.route.model, 'gemini-3.1-flash-lite');
-  assert.deepEqual(calledModels1, ['gemini-4-hydrogen', 'gemini-3.1-flash-lite']);
+  assert.equal(res1.result, 'Answer from Gemini 2.5 Flash');
+  assert.equal(res1.route.model, 'gemini-2.5-flash');
+  assert.deepEqual(calledModels1, ['gemini-2.5-flash-lite', 'gemini-2.5-flash']);
   assert.equal(statuses1[0].reason, 'failover');
   assert.equal(statuses1[0].delayMs, 0);
 
@@ -654,5 +658,94 @@ test('daily updates validation, chronological sorting, filtering, and upload siz
   assert.equal(getUploadLimitForMediaType('notes.pdf', 'application/pdf').label, '25 MB');
   assert.equal(getUploadLimitForMediaType('lecture.mp4', 'video/mp4').label, '100 MB');
 });
+
+test('executeMultiModelWithFallback defaults to max 4 retries (5 attempts) across gemini-2.5-flash-lite and gemini-2.5-flash with jittered backoff', async () => {
+  const routes = [
+    {
+      model: 'gemini-2.5-flash-lite',
+      label: 'Primary Flash Lite',
+      supportsThinkingLevel: false,
+      useCompactLiteParams: true,
+      timeoutMs: 8000,
+    },
+    {
+      model: 'gemini-2.5-flash',
+      label: 'Secondary Flash',
+      supportsThinkingLevel: false,
+      useCompactLiteParams: false,
+      timeoutMs: 8000,
+    },
+  ];
+
+  // Exhaust all 4 retries (5 total attempts) on 429 RESOURCE_EXHAUSTED
+  const calledModels: string[] = [];
+  const delays: number[] = [];
+  await assert.rejects(
+    executeMultiModelWithFallback(
+      async (route) => {
+        calledModels.push(route.model);
+        throw new Error('429 RESOURCE_EXHAUSTED');
+      },
+      {
+        routes,
+        baseDelayMs: 4,
+        maxDelayMs: 20,
+        onStatus: (info) => delays.push(info.delayMs),
+      },
+    ),
+  );
+
+  assert.deepEqual(calledModels, [
+    'gemini-2.5-flash-lite',
+    'gemini-2.5-flash',
+    'gemini-2.5-flash-lite',
+    'gemini-2.5-flash',
+    'gemini-2.5-flash-lite',
+  ]);
+  assert.equal(delays.length, 4);
+  assert.equal(delays[0], 0); // instant switch to backup model
+  assert.ok(delays[1] >= 4);
+  assert.ok(delays[2] >= 8);
+  assert.ok(delays[3] >= 16);
+});
+
+test('Mission AI response cache normalizes identical prompts, serves in-memory hits, respects TTL, and clears cleanly', () => {
+  clearCachedMissionAiResponses();
+
+  const keyA = buildMissionAiCacheKey(
+    [{ role: 'user', text: '  Explain   Newton Second Law  ' }],
+    'bilingual',
+  );
+  const keyB = buildMissionAiCacheKey(
+    [{ role: 'user', text: 'explain newton second law' }],
+    'bilingual',
+  );
+  const keyHindi = buildMissionAiCacheKey(
+    [{ role: 'user', text: 'explain newton second law' }],
+    'hindi',
+  );
+
+  assert.equal(keyA, keyB);
+  assert.notEqual(keyA, keyHindi);
+
+  setCachedMissionAiResponse(keyA, 'F = m * a (Force equals mass times acceleration).', 'gemini-2.5-flash-lite', {
+    now: 1000,
+  });
+
+  const hit = getCachedMissionAiResponse(keyB, { now: 2000, ttlMs: 10_000 });
+  assert.ok(hit);
+  assert.equal(hit?.answer, 'F = m * a (Force equals mass times acceleration).');
+  assert.equal(hit?.model, 'gemini-2.5-flash-lite');
+
+  // Expired TTL returns null and evicts entry
+  const expired = getCachedMissionAiResponse(keyB, { now: 20_000, ttlMs: 10_000 });
+  assert.equal(expired, null);
+
+  setCachedMissionAiResponse(keyHindi, 'बल = द्रव्यमान × त्वरण', 'gemini-2.5-flash', { now: 5000 });
+  assert.ok(getCachedMissionAiResponse(keyHindi, { now: 6000 }));
+  clearCachedMissionAiResponses();
+  assert.equal(getCachedMissionAiResponse(keyHindi, { now: 6000 }), null);
+});
+
 
 

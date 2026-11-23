@@ -526,16 +526,29 @@ export function isGeminiKeyAuthError(error: unknown): boolean {
   );
 }
 
+export function isGeminiModelNotFoundError(error: unknown): boolean {
+  const raw =
+    error instanceof Error
+      ? `${(error as { status?: unknown; code?: unknown }).status ?? ''} ${error.message}`
+      : typeof error === 'object' && error !== null
+        ? JSON.stringify(error)
+        : String(error ?? '');
+  const lower = raw.toLowerCase();
+  return lower.includes('not_found') || /\b404\b/.test(lower);
+}
+
 export interface MultiModelRouteSpec {
   model: string;
   label: string;
-  thinkingLevel: 'LOW' | 'MINIMAL';
+  thinkingLevel?: 'LOW' | 'MINIMAL';
+  supportsThinkingLevel?: boolean;
   useCompactLiteParams: boolean;
   timeoutMs: number;
 }
 
 export interface MultiModelFallbackOptions<R extends MultiModelRouteSpec> {
   routes: R[];
+  maxRetries?: number;
   maxAttempts?: number;
   baseDelayMs?: number;
   maxDelayMs?: number;
@@ -555,12 +568,18 @@ export async function executeMultiModelWithFallback<T, R extends MultiModelRoute
 ): Promise<{ result: T; route: R; attempt: number }> {
   const {
     routes,
-    maxAttempts = 4,
+    maxRetries = 4,
+    maxAttempts: explicitMaxAttempts,
     baseDelayMs = 450,
-    maxDelayMs = 2400,
+    maxDelayMs = 3200,
     shouldAbort,
     onStatus,
   } = options;
+
+  const totalTransientAttempts =
+    typeof explicitMaxAttempts === 'number' && explicitMaxAttempts > 0
+      ? explicitMaxAttempts
+      : Math.max(1, maxRetries + 1);
 
   if (!routes.length) {
     throw new Error('No Gemini model routes configured.');
@@ -568,16 +587,33 @@ export async function executeMultiModelWithFallback<T, R extends MultiModelRoute
 
   let lastError: unknown;
   let backoffRound = 0;
+  let transientAttemptsUsed = 0;
+  const skippedNotFoundModels = new Set<string>();
+  const maxTotalIterations = totalTransientAttempts + routes.length;
 
-  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+  for (let iteration = 0, routeIdx = 0; iteration < maxTotalIterations; iteration += 1) {
     if (shouldAbort?.()) {
       throw lastError ?? new Error('Request cancelled.');
     }
 
-    const route = routes[attempt % routes.length];
+    // Advance past models already discovered to be 404/unavailable in this call
+    let foundCandidate = false;
+    for (let probe = 0; probe < routes.length; probe += 1) {
+      const candidate = routes[(routeIdx + probe) % routes.length];
+      if (!skippedNotFoundModels.has(candidate.model)) {
+        routeIdx = (routeIdx + probe) % routes.length;
+        foundCandidate = true;
+        break;
+      }
+    }
+    if (!foundCandidate) {
+      throw lastError ?? new Error('All configured Gemini models returned not found.');
+    }
+
+    const route = routes[routeIdx];
     try {
-      const result = await routesToRun(route, attempt);
-      return { result, route, attempt };
+      const result = await routesToRun(route, transientAttemptsUsed);
+      return { result, route, attempt: transientAttemptsUsed };
     } catch (error) {
       lastError = error;
 
@@ -586,12 +622,32 @@ export async function executeMultiModelWithFallback<T, R extends MultiModelRoute
         throw error;
       }
 
-      const isLastAttempt = attempt >= maxAttempts - 1;
+      const modelNotFound = isGeminiModelNotFoundError(error);
+      if (modelNotFound) {
+        skippedNotFoundModels.add(route.model);
+        const hasRemainingModel = routes.some((r) => !skippedNotFoundModels.has(r.model));
+        if (!hasRemainingModel) {
+          throw error;
+        }
+        routeIdx = (routeIdx + 1) % routes.length;
+        onStatus?.({
+          attempt: transientAttemptsUsed + 1,
+          route: routes[routeIdx],
+          reason: 'failover',
+          delayMs: 0,
+          error,
+        });
+        continue;
+      }
+
+      transientAttemptsUsed += 1;
+      const isLastAttempt = transientAttemptsUsed >= totalTransientAttempts;
       if (isLastAttempt) {
         throw error;
       }
 
-      const nextRoute = routes[(attempt + 1) % routes.length];
+      const nextIdx = (routeIdx + 1) % routes.length;
+      const nextRoute = routes[nextIdx];
       const switchingToDistinctModel = nextRoute.model !== route.model;
       const canFailoverOrRetry =
         isTransientGeminiApiError(error) ||
@@ -602,22 +658,24 @@ export async function executeMultiModelWithFallback<T, R extends MultiModelRoute
       }
 
       // Instant failover (0ms wait) on the first switch to a distinct secondary model;
-      // apply exponential backoff with gentle jitter on subsequent traffic-spike rounds.
+      // apply exponential backoff with random jitter on subsequent retry rounds.
       let delayMs = 0;
       let reason: 'failover' | 'backoff' = 'failover';
 
-      if (attempt === 0 && switchingToDistinctModel) {
+      if (backoffRound === 0 && transientAttemptsUsed === 1 && switchingToDistinctModel) {
         delayMs = 0;
         reason = 'failover';
       } else {
         const expDelay = Math.min(maxDelayMs, baseDelayMs * Math.pow(2, backoffRound));
-        const jitter = Math.min(200, Math.round(expDelay * 0.2));
-        delayMs = expDelay + (baseDelayMs >= 50 ? Math.floor(Math.random() * jitter) : 0);
+        const maxJitter = Math.max(1, Math.min(350, Math.round(expDelay * 0.25)));
+        const jitter = Math.floor(Math.random() * maxJitter);
+        delayMs = expDelay + jitter;
         backoffRound += 1;
         reason = 'backoff';
       }
 
-      onStatus?.({ attempt: attempt + 1, route: nextRoute, reason, delayMs, error });
+      routeIdx = nextIdx;
+      onStatus?.({ attempt: transientAttemptsUsed, route: nextRoute, reason, delayMs, error });
       if (delayMs > 0) {
         await new Promise((resolve) => setTimeout(resolve, delayMs));
       }
@@ -625,6 +683,125 @@ export async function executeMultiModelWithFallback<T, R extends MultiModelRoute
   }
 
   throw lastError;
+}
+
+export interface MissionAiCacheEntry {
+  answer: string;
+  model?: string;
+  cachedAt: number;
+}
+
+const MISSION_AI_CACHE_STORAGE_KEY = 'amp_mission_ai_response_cache_v1';
+const MISSION_AI_CACHE_MAX_ENTRIES = 50;
+const MISSION_AI_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+const missionAiMemoryCache = new Map<string, MissionAiCacheEntry>();
+
+export function buildMissionAiCacheKey(
+  messages: Array<{ role: string; text: string }>,
+  languagePreference = 'bilingual',
+): string {
+  const normalized = messages
+    .map((m) => ({
+      role: m.role === 'assistant' || m.role === 'model' ? 'assistant' : 'user',
+      text: (m.text || '').trim().replace(/\s+/g, ' ').toLowerCase(),
+    }))
+    .filter((m) => m.text.length > 0);
+  return `${languagePreference}::${JSON.stringify(normalized)}`;
+}
+
+function pruneMissionAiCacheEntries(
+  entries: Record<string, MissionAiCacheEntry>,
+  now = Date.now(),
+  ttlMs = MISSION_AI_CACHE_TTL_MS,
+  maxEntries = MISSION_AI_CACHE_MAX_ENTRIES,
+): Record<string, MissionAiCacheEntry> {
+  const valid = Object.entries(entries)
+    .filter(([, val]) => val && typeof val.answer === 'string' && val.answer.trim() && now - val.cachedAt < ttlMs)
+    .sort((a, b) => b[1].cachedAt - a[1].cachedAt)
+    .slice(0, maxEntries);
+  return Object.fromEntries(valid);
+}
+
+export function getCachedMissionAiResponse(
+  cacheKey: string,
+  options?: { ttlMs?: number; now?: number },
+): MissionAiCacheEntry | null {
+  if (!cacheKey) return null;
+  const now = options?.now ?? Date.now();
+  const ttlMs = options?.ttlMs ?? MISSION_AI_CACHE_TTL_MS;
+
+  const memHit = missionAiMemoryCache.get(cacheKey);
+  if (memHit && now - memHit.cachedAt < ttlMs && memHit.answer.trim()) {
+    return memHit;
+  }
+  if (memHit) {
+    missionAiMemoryCache.delete(cacheKey);
+  }
+
+  try {
+    if (typeof localStorage === 'undefined') return null;
+    const raw = localStorage.getItem(MISSION_AI_CACHE_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Record<string, MissionAiCacheEntry>;
+    const entry = parsed[cacheKey];
+    if (entry && typeof entry.answer === 'string' && entry.answer.trim() && now - entry.cachedAt < ttlMs) {
+      missionAiMemoryCache.set(cacheKey, entry);
+      return entry;
+    }
+  } catch {
+    // Ignore storage read errors in restricted browsers
+  }
+  return null;
+}
+
+export function setCachedMissionAiResponse(
+  cacheKey: string,
+  answer: string,
+  model?: string,
+  options?: { now?: number; ttlMs?: number; maxEntries?: number },
+): void {
+  const cleanAnswer = (answer || '').trim();
+  if (!cacheKey || !cleanAnswer) return;
+
+  const now = options?.now ?? Date.now();
+  const entry: MissionAiCacheEntry = {
+    answer: cleanAnswer,
+    model,
+    cachedAt: now,
+  };
+
+  missionAiMemoryCache.set(cacheKey, entry);
+  if (missionAiMemoryCache.size > (options?.maxEntries ?? MISSION_AI_CACHE_MAX_ENTRIES)) {
+    const oldestKey = missionAiMemoryCache.keys().next().value;
+    if (oldestKey) missionAiMemoryCache.delete(oldestKey);
+  }
+
+  try {
+    if (typeof localStorage === 'undefined') return;
+    const raw = localStorage.getItem(MISSION_AI_CACHE_STORAGE_KEY);
+    const existing = raw ? (JSON.parse(raw) as Record<string, MissionAiCacheEntry>) : {};
+    existing[cacheKey] = entry;
+    const pruned = pruneMissionAiCacheEntries(
+      existing,
+      now,
+      options?.ttlMs ?? MISSION_AI_CACHE_TTL_MS,
+      options?.maxEntries ?? MISSION_AI_CACHE_MAX_ENTRIES,
+    );
+    localStorage.setItem(MISSION_AI_CACHE_STORAGE_KEY, JSON.stringify(pruned));
+  } catch {
+    // Ignore localStorage quota / private browsing errors
+  }
+}
+
+export function clearCachedMissionAiResponses(): void {
+  missionAiMemoryCache.clear();
+  try {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.removeItem(MISSION_AI_CACHE_STORAGE_KEY);
+    }
+  } catch {
+    // Ignore
+  }
 }
 
 export function formatFriendlyAiError(rawMessage: string): string {

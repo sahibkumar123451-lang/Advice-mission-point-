@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { GoogleGenAI, ThinkingLevel } from '@google/genai';
+import { GoogleGenAI } from '@google/genai';
 
 interface AiChatInputMessage {
   role?: string;
@@ -14,39 +14,50 @@ interface AiTurn {
 interface RouteSpec {
   model: string;
   label: string;
-  thinkingLevel: ThinkingLevel;
   useCompactLiteParams: boolean;
   timeoutMs: number;
 }
 
 const ROUTES: RouteSpec[] = [
   {
-    model: 'gemini-3.1-flash-lite',
+    model: 'gemini-2.5-flash-lite',
     label: 'Primary Flash Lite',
-    thinkingLevel: ThinkingLevel.MINIMAL,
     useCompactLiteParams: true,
     timeoutMs: 12000,
   },
   {
-    model: 'gemini-4-hydrogen',
+    model: 'gemini-2.5-flash',
     label: 'Secondary Flash',
-    thinkingLevel: ThinkingLevel.LOW,
     useCompactLiteParams: false,
     timeoutMs: 15000,
   },
 ];
 
-let stickyHealthyModel: string | null = null;
-let stickyHealthyUpdatedAt = 0;
+const modelCooldownUntil = new Map<string, number>();
+const RATE_LIMIT_COOLDOWN_MS = 30_000;
+const responseCache = new Map<string, { answer: string; modelLabel: string; cachedAt: number }>();
+const CACHE_TTL_MS = 15 * 60 * 1000;
 
 function getOrderedRoutes(): RouteSpec[] {
-  if (stickyHealthyModel && Date.now() - stickyHealthyUpdatedAt < 60_000) {
-    const preferred = ROUTES.find((r) => r.model === stickyHealthyModel);
-    if (preferred) {
-      return [preferred, ...ROUTES.filter((r) => r.model !== stickyHealthyModel)];
-    }
+  const now = Date.now();
+  const healthy = ROUTES.filter((r) => (modelCooldownUntil.get(r.model) ?? 0) <= now);
+  const cooling = ROUTES.filter((r) => (modelCooldownUntil.get(r.model) ?? 0) > now);
+  return healthy.length > 0 ? [...healthy, ...cooling] : ROUTES;
+}
+
+function recordRateLimit(model: string, err: unknown): void {
+  const msg = err instanceof Error ? err.message.toLowerCase() : String(err).toLowerCase();
+  if (msg.includes('429') || msg.includes('resource_exhausted') || msg.includes('quota')) {
+    modelCooldownUntil.set(model, Date.now() + RATE_LIMIT_COOLDOWN_MS);
   }
-  return ROUTES;
+}
+
+function buildCacheKey(turns: AiTurn[], lang = 'bilingual'): string {
+  const clean = turns.map((t) => ({
+    role: t.role,
+    text: (t.parts[0]?.text || '').trim().replace(/\s+/g, ' ').toLowerCase(),
+  }));
+  return `${lang}::${JSON.stringify(clean)}`;
 }
 
 function setCorsHeaders(res: ServerResponse): void {
@@ -321,12 +332,23 @@ export default async function handler(
     }
   };
 
+  const cacheKey = buildCacheKey(normalizedTurns, body.languagePreference || 'bilingual');
+  const cached = responseCache.get(cacheKey);
+  if (cached && Date.now() - cached.cachedAt < CACHE_TTL_MS) {
+    sendEvent({ delta: cached.answer });
+    sendEvent({ done: true, model: cached.modelLabel, cached: true });
+    res.end();
+    return;
+  }
+
   let emittedAny = false;
+  let accumulatedAnswer = '';
   const routes = getOrderedRoutes();
   let lastError: unknown;
   let backoffRound = 0;
 
-  for (let attempt = 0; attempt < 4; attempt += 1) {
+  // Max 4 retries (up to 5 total attempts across both models)
+  for (let attempt = 0; attempt < 5; attempt += 1) {
     if (emittedAny || clientDisconnected || res.writableEnded) {
       break;
     }
@@ -336,14 +358,14 @@ export default async function handler(
         const config = route.useCompactLiteParams
           ? {
               systemInstruction,
-              thinkingConfig: { thinkingLevel: route.thinkingLevel },
-              temperature: 0.5,
-              maxOutputTokens: 512,
+              temperature: 0.55,
+              maxOutputTokens: 700,
               abortSignal: controller.signal,
             }
           : {
               systemInstruction,
-              thinkingConfig: { thinkingLevel: route.thinkingLevel },
+              temperature: 0.65,
+              maxOutputTokens: 1024,
               abortSignal: controller.signal,
             };
 
@@ -364,6 +386,7 @@ export default async function handler(
               clearInitialTimeout();
               emittedAny = true;
             }
+            accumulatedAnswer += delta;
             sendEvent({ delta });
           }
         }
@@ -373,19 +396,30 @@ export default async function handler(
         throw new Error('Empty model response.');
       }
 
-      stickyHealthyModel = route.model;
-      stickyHealthyUpdatedAt = Date.now();
+      modelCooldownUntil.delete(route.model);
+      if (accumulatedAnswer.trim()) {
+        responseCache.set(cacheKey, {
+          answer: accumulatedAnswer.trim(),
+          modelLabel: route.label,
+          cachedAt: Date.now(),
+        });
+        if (responseCache.size > 100) {
+          const oldest = responseCache.keys().next().value;
+          if (oldest) responseCache.delete(oldest);
+        }
+      }
       sendEvent({ done: true, model: route.label });
       res.end();
       return;
     } catch (error) {
       lastError = error;
+      recordRateLimit(route.model, error);
       if (emittedAny) {
         sendEvent({ done: true });
         res.end();
         return;
       }
-      if (clientDisconnected || res.writableEnded || isAuthError(error) || attempt >= 3) {
+      if (clientDisconnected || res.writableEnded || isAuthError(error) || attempt >= 4) {
         break;
       }
       const nextRoute = routes[(attempt + 1) % routes.length];
@@ -399,7 +433,9 @@ export default async function handler(
       if (attempt === 0 && switchingModel) {
         delayMs = 0;
       } else {
-        delayMs = Math.min(2200, 450 * Math.pow(2, backoffRound));
+        const expDelay = Math.min(3200, 450 * Math.pow(2, backoffRound));
+        const jitter = Math.floor(Math.random() * Math.max(1, Math.round(expDelay * 0.25)));
+        delayMs = expDelay + jitter;
         backoffRound += 1;
         reason = 'backoff';
       }
@@ -408,7 +444,7 @@ export default async function handler(
         status: reason,
         message:
           reason === 'failover'
-            ? 'Primary AI is busy — switching seamlessly to backup model...'
+            ? 'Primary AI is busy — switching automatically to backup Flash model...'
             : 'High traffic detected — retrying gently in a moment...',
       });
 

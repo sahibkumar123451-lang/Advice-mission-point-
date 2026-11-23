@@ -8,8 +8,11 @@ import {
   Sparkles,
 } from 'lucide-react';
 import {
+  buildMissionAiCacheKey,
   formatFriendlyAiError,
+  getCachedMissionAiResponse,
   retryWithExponentialBackoff,
+  setCachedMissionAiResponse,
 } from '../utils/coachingLogic';
 
 export interface ChatMessage {
@@ -91,7 +94,13 @@ function shouldRetryClientFetchError(err: unknown): boolean {
     return false;
   }
   const msg = err instanceof Error ? err.message.toLowerCase() : String(err).toLowerCase();
-  if (msg.includes('api_key_invalid') || msg.includes('403') || msg.includes('400')) {
+  // Server already executed 4 retries across both models if it returned our formatted busy message
+  if (
+    msg.includes('ask again') ||
+    msg.includes('api_key_invalid') ||
+    msg.includes('403') ||
+    msg.includes('400')
+  ) {
     return false;
   }
   return (
@@ -109,6 +118,18 @@ function shouldRetryClientFetchError(err: unknown): boolean {
   );
 }
 
+const MIN_LIVE_REQUEST_GAP_MS = 900;
+const MAX_QUEUED_QUESTIONS = 3;
+
+interface QueuedAiRequest {
+  question: string;
+  options?: {
+    replaceMessageId?: string;
+    omitUserAppend?: boolean;
+    interruptActive?: boolean;
+  };
+}
+
 export function MissionAI({
   coachingName,
   externalPrompt,
@@ -122,6 +143,7 @@ export function MissionAI({
   const [languagePreference, setLanguagePreference] =
     useState<LanguagePreference>('bilingual');
   const [isStreaming, setIsStreaming] = useState(false);
+  const [queuedCount, setQueuedCount] = useState(0);
   const [statusNotice, setStatusNotice] = useState<string | null>(null);
   const [lastSubmittedQuestion, setLastSubmittedQuestion] = useState('');
 
@@ -131,6 +153,8 @@ export function MissionAI({
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const sendingRef = useRef(false);
+  const lastLiveApiAtRef = useRef(0);
+  const requestQueueRef = useRef<QueuedAiRequest[]>([]);
 
   // Focus input smoothly when navbar/hero triggers Mission AI
   useEffect(() => {
@@ -168,7 +192,7 @@ export function MissionAI({
     };
   }, []);
 
-  const askMissionAi = useCallback(
+  const executeSingleMissionAiRequest = useCallback(
     async (
       rawQuestion: string,
       options?: {
@@ -180,13 +204,6 @@ export function MissionAI({
       const trimmed = rawQuestion.trim();
       if (!trimmed) {
         return;
-      }
-      if (sendingRef.current) {
-        if (!options?.interruptActive) {
-          return;
-        }
-        abortControllerRef.current?.abort();
-        sendingRef.current = false;
       }
 
       sendingRef.current = true;
@@ -229,6 +246,37 @@ export function MissionAI({
             { id: userMsgId, role: 'user', text: trimmed },
           ];
 
+      if (!options?.omitUserAppend) {
+        setInput('');
+      }
+
+      const conversationCacheKey = buildMissionAiCacheKey(conversationPayload, languagePreference);
+      const standaloneCacheKey = buildMissionAiCacheKey(
+        [{ role: 'user', text: trimmed }],
+        languagePreference,
+      );
+      const isStarterOrStandalone =
+        conversationPayload.length === 1 ||
+        STARTER_QUESTIONS.some((q) => q.prompt.trim() === trimmed);
+
+      // Instant in-memory / localStorage cache hit (saves API quota completely)
+      const cachedHit =
+        getCachedMissionAiResponse(conversationCacheKey) ??
+        (isStarterOrStandalone ? getCachedMissionAiResponse(standaloneCacheKey) : null);
+
+      if (cachedHit) {
+        const resolvedMessages: ChatMessage[] = [
+          ...nextMessages,
+          { id: assistantMsgId, role: 'assistant' as const, text: cachedHit.answer },
+        ];
+        messagesRef.current = resolvedMessages;
+        setMessages(resolvedMessages);
+        setStatusNotice(null);
+        setIsStreaming(false);
+        sendingRef.current = false;
+        return;
+      }
+
       const updatedWithPending = [
         ...nextMessages,
         { id: assistantMsgId, role: 'assistant' as const, text: '' },
@@ -236,14 +284,22 @@ export function MissionAI({
       messagesRef.current = updatedWithPending;
       setMessages(updatedWithPending);
 
-      if (!options?.omitUserAppend) {
-        setInput('');
-      }
-
       const controller = new AbortController();
       abortControllerRef.current = controller;
 
+      // Client-side throttling so rapid requests never overlap or spike free-tier RPM
+      const elapsedSinceLastLive = Date.now() - lastLiveApiAtRef.current;
+      if (lastLiveApiAtRef.current > 0 && elapsedSinceLastLive < MIN_LIVE_REQUEST_GAP_MS) {
+        const waitMs = MIN_LIVE_REQUEST_GAP_MS - elapsedSinceLastLive;
+        setStatusNotice('Pacing requests smoothly to protect free-tier quota...');
+        await new Promise((resolve) => setTimeout(resolve, waitMs));
+        if (controller.signal.aborted) {
+          return;
+        }
+      }
+
       let receivedDelta = false;
+      let finalAnswerText = '';
       const slowConnectionTimer = setTimeout(() => {
         if (!receivedDelta && !controller.signal.aborted) {
           setStatusNotice(
@@ -251,6 +307,8 @@ export function MissionAI({
           );
         }
       }, 2500);
+
+      lastLiveApiAtRef.current = Date.now();
 
       try {
         await retryWithExponentialBackoff(
@@ -296,6 +354,7 @@ export function MissionAI({
                 throw new Error('Empty model response');
               }
               receivedDelta = true;
+              finalAnswerText = json.answer;
               setStatusNotice(null);
               setMessages((prev) =>
                 prev.map((m) =>
@@ -351,6 +410,7 @@ export function MissionAI({
                       setStatusNotice(null);
                     }
                     accumulated += payload.delta;
+                    finalAnswerText = accumulated;
                     setMessages((prev) =>
                       prev.map((m) =>
                         m.id === assistantMsgId ? { ...m, text: accumulated } : m,
@@ -373,8 +433,8 @@ export function MissionAI({
           },
           {
             maxRetries: 2,
-            baseDelayMs: 400,
-            maxDelayMs: 1600,
+            baseDelayMs: 450,
+            maxDelayMs: 1800,
             shouldRetry: (err) => !receivedDelta && shouldRetryClientFetchError(err),
             onRetry: (attempt) => {
               if (!receivedDelta) {
@@ -387,16 +447,27 @@ export function MissionAI({
             },
           },
         );
+
+        if (finalAnswerText.trim()) {
+          setCachedMissionAiResponse(conversationCacheKey, finalAnswerText);
+          if (isStarterOrStandalone) {
+            setCachedMissionAiResponse(standaloneCacheKey, finalAnswerText);
+          }
+        }
       } catch (streamErr) {
         if (controller.signal.aborted) {
           return;
         }
 
-        // Fallback to non-streaming /api/mission-ai/ask if streaming didn't emit any text
+        // Fallback to non-streaming /api/mission-ai/ask only if streaming failed without server quota exhaustion
         let fallbackErrorMessage = '';
-        if (!receivedDelta) {
+        const streamRawMsg =
+          streamErr instanceof Error ? streamErr.message : String(streamErr ?? '');
+        const alreadyExhaustedOnServer = streamRawMsg.toLowerCase().includes('ask again');
+
+        if (!receivedDelta && !alreadyExhaustedOnServer) {
           try {
-            setStatusNotice('Completing your reply via direct mode...');
+            setStatusNotice('Completing your reply via backup route...');
             const askRes = await fetch('/api/mission-ai/ask', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
@@ -412,6 +483,10 @@ export function MissionAI({
               if (askRes.ok && data.answer?.trim()) {
                 receivedDelta = true;
                 setStatusNotice(null);
+                setCachedMissionAiResponse(conversationCacheKey, data.answer);
+                if (isStarterOrStandalone) {
+                  setCachedMissionAiResponse(standaloneCacheKey, data.answer);
+                }
                 setMessages((prev) =>
                   prev.map((m) =>
                     m.id === assistantMsgId ? { ...m, text: data.answer! } : m,
@@ -428,9 +503,7 @@ export function MissionAI({
           }
         }
 
-        const rawMsg =
-          fallbackErrorMessage ||
-          (streamErr instanceof Error ? streamErr.message : String(streamErr ?? ''));
+        const rawMsg = fallbackErrorMessage || streamRawMsg;
         const friendly = formatFriendlyAiError(rawMsg);
 
         setMessages((prev) =>
@@ -457,6 +530,64 @@ export function MissionAI({
     [languagePreference],
   );
 
+  const askMissionAi = useCallback(
+    async (
+      rawQuestion: string,
+      options?: {
+        replaceMessageId?: string;
+        omitUserAppend?: boolean;
+        interruptActive?: boolean;
+      },
+    ) => {
+      const trimmed = rawQuestion.trim();
+      if (!trimmed) {
+        return;
+      }
+
+      if (sendingRef.current) {
+        if (options?.interruptActive) {
+          abortControllerRef.current?.abort();
+          requestQueueRef.current = [];
+          setQueuedCount(0);
+          sendingRef.current = false;
+        } else {
+          // Sequential client-side queue prevents overlapping API calls on rapid clicks
+          const alreadyQueued = requestQueueRef.current.some(
+            (q) => q.question.toLowerCase() === trimmed.toLowerCase(),
+          );
+          if (alreadyQueued) {
+            return;
+          }
+          if (requestQueueRef.current.length >= MAX_QUEUED_QUESTIONS) {
+            setStatusNotice(
+              'Please wait a moment — answering your queued questions smoothly one by one.',
+            );
+            return;
+          }
+          requestQueueRef.current.push({ question: trimmed, options });
+          setQueuedCount(requestQueueRef.current.length);
+          if (!options?.omitUserAppend) {
+            setInput('');
+          }
+          setStatusNotice(
+            `Queued (${requestQueueRef.current.length}) — answering in order so free-tier quota stays smooth...`,
+          );
+          return;
+        }
+      }
+
+      await executeSingleMissionAiRequest(trimmed, options);
+
+      while (requestQueueRef.current.length > 0 && !abortControllerRef.current?.signal.aborted) {
+        const nextReq = requestQueueRef.current.shift();
+        setQueuedCount(requestQueueRef.current.length);
+        if (!nextReq) break;
+        await executeSingleMissionAiRequest(nextReq.question, nextReq.options);
+      }
+    },
+    [executeSingleMissionAiRequest],
+  );
+
   // Trigger external prompt passed from Learning Hub cards/modal
   useEffect(() => {
     if (externalPrompt && externalPrompt.text.trim()) {
@@ -480,6 +611,8 @@ export function MissionAI({
 
   const handleNewChat = () => {
     abortControllerRef.current?.abort();
+    requestQueueRef.current = [];
+    setQueuedCount(0);
     sendingRef.current = false;
     setIsStreaming(false);
     setStatusNotice(null);
@@ -528,7 +661,7 @@ export function MissionAI({
                   <button
                     key={item.label}
                     type="button"
-                    disabled={isStreaming}
+                    disabled={queuedCount >= MAX_QUEUED_QUESTIONS}
                     onClick={() => void askMissionAi(item.prompt)}
                     className="text-left p-3.5 rounded-xl bg-[#141720] border border-zinc-800 hover:border-blue-500/60 hover:bg-[#181C26] transition-colors disabled:opacity-60 cursor-pointer"
                   >
@@ -644,7 +777,7 @@ export function MissionAI({
                           <div className="mt-3 pt-2.5 border-t border-red-500/30 flex flex-wrap items-center gap-2">
                             <button
                               type="button"
-                              disabled={isStreaming}
+                              disabled={queuedCount >= MAX_QUEUED_QUESTIONS}
                               onClick={() =>
                                 void askMissionAi(msg.failedQuestion!, {
                                   replaceMessageId: msg.id,
@@ -676,7 +809,7 @@ export function MissionAI({
                 })}
               </div>
 
-              {/* Calm non-blocking status bar when switching models or warming up */}
+              {/* Calm non-blocking status bar when switching models, queuing, or warming up */}
               {statusNotice && (
                 <div
                   role="status"
@@ -708,7 +841,7 @@ export function MissionAI({
                   />
                   <button
                     type="submit"
-                    disabled={isStreaming || !input.trim()}
+                    disabled={queuedCount >= MAX_QUEUED_QUESTIONS || !input.trim()}
                     aria-label="Send question to Mission AI"
                     className="inline-flex items-center justify-center gap-2 px-4 py-3 text-sm font-semibold text-white bg-blue-600 hover:bg-blue-500 disabled:bg-zinc-800 disabled:text-slate-500 disabled:cursor-not-allowed rounded-xl transition-colors shrink-0 cursor-pointer"
                   >
@@ -718,7 +851,7 @@ export function MissionAI({
                       <SendHorizontal className="w-4 h-4" aria-hidden="true" />
                     )}
                     <span className="hidden sm:inline">
-                      {isStreaming ? 'Answering...' : 'Ask'}
+                      {isStreaming ? (queuedCount > 0 ? `Queued (${queuedCount})` : 'Queue') : 'Ask'}
                     </span>
                   </button>
                 </div>

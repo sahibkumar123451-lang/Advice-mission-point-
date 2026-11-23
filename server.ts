@@ -4,7 +4,7 @@ import path from 'path';
 import crypto from 'crypto';
 import express from 'express';
 import type { Request, Response, NextFunction } from 'express';
-import { GoogleGenAI, ThinkingLevel } from '@google/genai';
+import { GoogleGenAI } from '@google/genai';
 import type {
   CoachingInfo,
   DailyUpdateItem,
@@ -19,6 +19,7 @@ import type {
 import {
   ADMIN_PASSCODE_HASH,
   ADMIN_PASSCODE_SALT,
+  buildMissionAiCacheKey,
   executeMultiModelWithFallback,
   formatFriendlyAiError,
   getUploadLimitForMediaType,
@@ -326,41 +327,75 @@ STRICT RESPONSE RULES:
 
   const MISSION_AI_ROUTES: MultiModelRouteSpec[] = [
     {
-      model: 'gemini-3.1-flash-lite',
+      model: 'gemini-2.5-flash-lite',
       label: 'Primary Flash Lite',
-      thinkingLevel: 'MINIMAL',
+      supportsThinkingLevel: false,
       useCompactLiteParams: true,
       timeoutMs: 12000,
     },
     {
-      model: 'gemini-4-hydrogen',
+      model: 'gemini-2.5-flash',
       label: 'Secondary Flash',
-      thinkingLevel: 'LOW',
+      supportsThinkingLevel: false,
       useCompactLiteParams: false,
       timeoutMs: 15000,
     },
   ];
 
-  let stickyHealthyModel: string | null = null;
-  let stickyHealthyUpdatedAt = 0;
-  const STICKY_HEALTH_TTL_MS = 60_000;
+  const modelCooldownUntil = new Map<string, number>();
+  const RATE_LIMIT_COOLDOWN_MS = 30_000;
+  const serverAiResponseCache = new Map<
+    string,
+    { answer: string; modelLabel: string; cachedAt: number }
+  >();
+  const SERVER_AI_CACHE_TTL_MS = 15 * 60 * 1000;
+  const SERVER_AI_CACHE_MAX_ENTRIES = 100;
+
+  function getServerCachedAiAnswer(cacheKey: string) {
+    const entry = serverAiResponseCache.get(cacheKey);
+    if (!entry) return null;
+    if (Date.now() - entry.cachedAt >= SERVER_AI_CACHE_TTL_MS) {
+      serverAiResponseCache.delete(cacheKey);
+      return null;
+    }
+    return entry;
+  }
+
+  function setServerCachedAiAnswer(cacheKey: string, answer: string, modelLabel: string) {
+    const clean = answer.trim();
+    if (!clean) return;
+    serverAiResponseCache.set(cacheKey, { answer: clean, modelLabel, cachedAt: Date.now() });
+    if (serverAiResponseCache.size > SERVER_AI_CACHE_MAX_ENTRIES) {
+      const oldest = serverAiResponseCache.keys().next().value;
+      if (oldest) serverAiResponseCache.delete(oldest);
+    }
+  }
 
   function getOrderedMissionAiRoutes(): MultiModelRouteSpec[] {
+    const now = Date.now();
+    const healthy = MISSION_AI_ROUTES.filter(
+      (r) => (modelCooldownUntil.get(r.model) ?? 0) <= now,
+    );
+    const cooling = MISSION_AI_ROUTES.filter(
+      (r) => (modelCooldownUntil.get(r.model) ?? 0) > now,
+    );
+    return healthy.length > 0 ? [...healthy, ...cooling] : MISSION_AI_ROUTES;
+  }
+
+  function recordRateLimitedModel(model: string, error: unknown) {
+    const msg = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
     if (
-      stickyHealthyModel &&
-      Date.now() - stickyHealthyUpdatedAt < STICKY_HEALTH_TTL_MS
+      msg.includes('429') ||
+      msg.includes('resource_exhausted') ||
+      msg.includes('quota') ||
+      msg.includes('too many requests')
     ) {
-      const preferred = MISSION_AI_ROUTES.find((r) => r.model === stickyHealthyModel);
-      if (preferred) {
-        return [preferred, ...MISSION_AI_ROUTES.filter((r) => r.model !== stickyHealthyModel)];
-      }
+      modelCooldownUntil.set(model, Date.now() + RATE_LIMIT_COOLDOWN_MS);
     }
-    return MISSION_AI_ROUTES;
   }
 
   function recordHealthyMissionAiModel(model: string) {
-    stickyHealthyModel = model;
-    stickyHealthyUpdatedAt = Date.now();
+    modelCooldownUntil.delete(model);
   }
 
   function buildGeminiConfig(
@@ -368,22 +403,19 @@ STRICT RESPONSE RULES:
     systemInstruction: string,
     abortSignal?: AbortSignal,
   ) {
-    const level =
-      route.thinkingLevel === 'MINIMAL' ? ThinkingLevel.MINIMAL : ThinkingLevel.LOW;
-    if (route.useCompactLiteParams) {
-      return {
-        systemInstruction,
-        thinkingConfig: { thinkingLevel: level },
-        temperature: 0.5,
-        maxOutputTokens: 512,
-        abortSignal,
-      };
-    }
-    return {
-      systemInstruction,
-      thinkingConfig: { thinkingLevel: level },
-      abortSignal,
-    };
+    return route.useCompactLiteParams
+      ? {
+          systemInstruction,
+          temperature: 0.55,
+          maxOutputTokens: 700,
+          abortSignal,
+        }
+      : {
+          systemInstruction,
+          temperature: 0.65,
+          maxOutputTokens: 1024,
+          abortSignal,
+        };
   }
 
   async function runWithAbortTimeout<T>(
@@ -475,13 +507,18 @@ STRICT RESPONSE RULES:
             ),
           }),
         );
+        const ok = Boolean(result.text?.trim());
+        if (ok) {
+          recordHealthyMissionAiModel(route.model);
+        }
         probeResults.push({
           model: route.model,
-          ok: Boolean(result.text?.trim()),
+          ok,
           elapsedMs: Date.now() - started,
           preview: result.text?.trim().slice(0, 140),
         });
       } catch (err) {
+        recordRateLimitedModel(route.model, err);
         probeResults.push({
           model: route.model,
           ok: false,
@@ -540,7 +577,20 @@ STRICT RESPONSE RULES:
       }
     };
 
+    const cacheKey = buildMissionAiCacheKey(
+      ctx.normalizedTurns.map((t) => ({ role: t.role, text: t.parts[0]?.text || '' })),
+      languagePreference || 'bilingual',
+    );
+    const cached = getServerCachedAiAnswer(cacheKey);
+    if (cached) {
+      sendEvent({ delta: cached.answer });
+      sendEvent({ done: true, model: cached.modelLabel, cached: true });
+      res.end();
+      return;
+    }
+
     let emittedAny = false;
+    let accumulatedAnswer = '';
     const routes = getOrderedMissionAiRoutes();
 
     try {
@@ -570,6 +620,7 @@ STRICT RESPONSE RULES:
                     clearInitialTimeout();
                     emittedAny = true;
                   }
+                  accumulatedAnswer += delta;
                   sendEvent({ delta });
                 }
               }
@@ -579,6 +630,7 @@ STRICT RESPONSE RULES:
               throw new Error('Empty model response.');
             }
           } catch (attemptErr) {
+            recordRateLimitedModel(route.model, attemptErr);
             const elapsed = Date.now() - startedAt;
             const detail =
               attemptErr instanceof Error ? attemptErr.message : String(attemptErr);
@@ -590,16 +642,16 @@ STRICT RESPONSE RULES:
         },
         {
           routes,
-          maxAttempts: 4,
+          maxRetries: 4,
           baseDelayMs: 450,
-          maxDelayMs: 2200,
+          maxDelayMs: 3200,
           shouldAbort: () => emittedAny || clientDisconnected || res.writableEnded,
           onStatus: ({ reason }) => {
             sendEvent({
               status: reason,
               message:
                 reason === 'failover'
-                  ? 'Primary AI is busy — switching seamlessly to backup model...'
+                  ? 'Primary AI is busy — switching automatically to backup Flash model...'
                   : 'High traffic detected — retrying gently in a moment...',
             });
           },
@@ -607,6 +659,9 @@ STRICT RESPONSE RULES:
       );
 
       recordHealthyMissionAiModel(winningRoute.model);
+      if (accumulatedAnswer.trim()) {
+        setServerCachedAiAnswer(cacheKey, accumulatedAnswer, winningRoute.label);
+      }
       sendEvent({ done: true, model: winningRoute.label });
       res.end();
     } catch (err) {
@@ -631,6 +686,16 @@ STRICT RESPONSE RULES:
     const ctx = buildMissionAiPromptContext(messages, languagePreference);
     if ('error' in ctx) {
       res.status(400).json({ error: ctx.error });
+      return;
+    }
+
+    const cacheKey = buildMissionAiCacheKey(
+      ctx.normalizedTurns.map((t) => ({ role: t.role, text: t.parts[0]?.text || '' })),
+      languagePreference || 'bilingual',
+    );
+    const cached = getServerCachedAiAnswer(cacheKey);
+    if (cached) {
+      res.json({ answer: cached.answer, cached: true });
       return;
     }
 
@@ -665,6 +730,7 @@ STRICT RESPONSE RULES:
             }
             return text;
           } catch (attemptErr) {
+            recordRateLimitedModel(route.model, attemptErr);
             const elapsed = Date.now() - startedAt;
             const detail =
               attemptErr instanceof Error ? attemptErr.message : String(attemptErr);
@@ -676,13 +742,14 @@ STRICT RESPONSE RULES:
         },
         {
           routes,
-          maxAttempts: 4,
+          maxRetries: 4,
           baseDelayMs: 450,
-          maxDelayMs: 2200,
+          maxDelayMs: 3200,
         },
       );
 
       recordHealthyMissionAiModel(winningRoute.model);
+      setServerCachedAiAnswer(cacheKey, answer, winningRoute.label);
       res.json({ answer });
     } catch (err) {
       const rawMessage =

@@ -1,15 +1,13 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { GoogleGenAI, ThinkingLevel } from '@google/genai';
+import { GoogleGenAI } from '@google/genai';
 
 const MODELS = [
   {
-    model: 'gemini-3.1-flash-lite',
-    thinkingLevel: ThinkingLevel.MINIMAL,
+    model: 'gemini-2.5-flash-lite',
     useCompactLiteParams: true,
   },
   {
-    model: 'gemini-4-hydrogen',
-    thinkingLevel: ThinkingLevel.LOW,
+    model: 'gemini-2.5-flash',
     useCompactLiteParams: false,
   },
 ] as const;
@@ -80,21 +78,13 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 12000);
     try {
-      const config = route.useCompactLiteParams
-        ? {
-            systemInstruction:
-              'You are Mission AI, assistant of Advice Mission Point owned by Surendra Sir.',
-            thinkingConfig: { thinkingLevel: route.thinkingLevel },
-            temperature: 0.5,
-            maxOutputTokens: 128,
-            abortSignal: controller.signal,
-          }
-        : {
-            systemInstruction:
-              'You are Mission AI, assistant of Advice Mission Point owned by Surendra Sir.',
-            thinkingConfig: { thinkingLevel: route.thinkingLevel },
-            abortSignal: controller.signal,
-          };
+      const config = {
+        systemInstruction:
+          'You are Mission AI, assistant of Advice Mission Point owned by Surendra Sir.',
+        temperature: route.useCompactLiteParams ? 0.55 : 0.65,
+        maxOutputTokens: route.useCompactLiteParams ? 128 : 256,
+        abortSignal: controller.signal,
+      };
 
       const result = await ai.models.generateContent({
         model: route.model,
