@@ -32,7 +32,9 @@ import {
   normalizeAiConversationHistory,
   normalizeExternalUrl,
   normalizeSafeMediaOrExternalUrl,
+  normalizeSiteBrandData,
   normalizeWhatsAppUrl,
+  replaceLegacyCoachingBrand,
   retryWithExponentialBackoff,
   saveAdminDraftToStorage,
   setCachedMissionAiResponse,
@@ -746,6 +748,45 @@ test('Mission AI response cache normalizes identical prompts, serves in-memory h
   clearCachedMissionAiResponses();
   assert.equal(getCachedMissionAiResponse(keyHindi, { now: 6000 }), null);
 });
+
+test('replaceLegacyCoachingBrand and normalizeSiteBrandData convert Advice Mission Point to Advice Coaching Classes everywhere', () => {
+  assert.equal(
+    replaceLegacyCoachingBrand('Welcome to Advice Mission Point, Ramauli'),
+    'Welcome to Advice Coaching Classes, Ramauli',
+  );
+  assert.equal(
+    replaceLegacyCoachingBrand('advice mission point'),
+    'Advice Coaching Classes',
+  );
+
+  const normalized = normalizeSiteBrandData({
+    ...DEFAULT_SITE_DATA,
+    coaching: {
+      ...DEFAULT_SITE_DATA.coaching,
+      name: 'Advice Mission Point',
+      aboutDescription: 'Advice Mission Point offers Class 1 to 12 guidance.',
+      address: 'Ramauli, Advice Mission Point Campus',
+    },
+    teacher: {
+      ...DEFAULT_SITE_DATA.teacher,
+      roleTitle: 'Founder — Advice Mission Point',
+      skills: ['📚 ADVICE MISSION POINT में शिक्षा', '❤️ ADVICE MISSION POINT'],
+    },
+  });
+
+  assert.equal(normalized.coaching.name, 'Advice Coaching Classes');
+  assert.equal(
+    normalized.coaching.aboutDescription,
+    'Advice Coaching Classes offers Class 1 to 12 guidance.',
+  );
+  assert.equal(normalized.coaching.address, 'Ramauli, Advice Coaching Classes Campus');
+  assert.equal(normalized.teacher.roleTitle, 'Founder — Advice Coaching Classes');
+  assert.deepEqual(normalized.teacher.skills, [
+    '📚 Advice Coaching Classes में शिक्षा',
+    '❤️ Advice Coaching Classes',
+  ]);
+});
+
 
 
 

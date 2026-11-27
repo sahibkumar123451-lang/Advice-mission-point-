@@ -35,7 +35,7 @@ interface MissionAIProps {
 const STARTER_QUESTIONS = [
   {
     label: 'About Coaching & Mission AI',
-    prompt: 'Who is the owner of Advice Mission Point and what can Mission AI help me with?',
+    prompt: 'Who is the owner of Advice Coaching Classes and what can Mission AI help me with?',
   },
   {
     label: 'Physics Doubt',

@@ -100,7 +100,7 @@ export function ContactSection({ coaching, socialLinks }: ContactSectionProps) {
               Social Media &amp; Contact Information
             </h2>
             <p className="mt-3 text-base text-slate-300 leading-relaxed">
-              Reach Advice Mission Point in {coaching.address}, or connect through our official social channels.
+              Reach Advice Coaching Classes in {coaching.address}, or connect through our official social channels.
             </p>
 
             {/* Social Links Grid */}
@@ -243,7 +243,7 @@ export function ContactSection({ coaching, socialLinks }: ContactSectionProps) {
                     className="flex items-center gap-2 p-3 rounded-lg bg-blue-950/50 border border-blue-500/40 text-blue-200 text-sm font-medium"
                   >
                     <CheckCircle2 className="w-4 h-4 text-blue-400 shrink-0" aria-hidden="true" />
-                    <span>Enquiry submitted. Advice Mission Point will respond shortly.</span>
+                    <span>Enquiry submitted. Advice Coaching Classes will respond shortly.</span>
                   </div>
                 )}
 

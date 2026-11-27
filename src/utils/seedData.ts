@@ -2,19 +2,19 @@ import type { SiteData } from '../types/coaching.ts';
 
 export const DEFAULT_SITE_DATA: SiteData = {
   coaching: {
-    name: 'Advice Mission Point',
+    name: 'Advice Coaching Classes',
     tagline: 'To Struggle, Take Success.',
     welcomeHeadline: 'Building Strong Foundations for Every Learner from Class 1 to Class 12.',
     welcomeSubtitle:
       'Disciplined classroom mentorship, concept clarity in simple Hindi & English, and personalized doubt support at Ramauli, Darbhanga (847101).',
     aboutHeading: 'Dedicated Academic Mentorship in Ramauli, Darbhanga',
     aboutDescription:
-      'Advice Mission Point is a community-trusted coaching institute located in Ramauli, Darbhanga, Bihar, India 847101. Here, students from Class 1 to Class 12 are taught in an encouraging, structured environment that prioritizes conceptual mastery, regular practice assessments, and personal attention. Rather than rote memorization, every learner is guided step-by-step from foundational school basics to board-level academic excellence.',
+      'Advice Coaching Classes is a community-trusted coaching institute located in Ramauli, Darbhanga, Bihar, India 847101. Here, students from Class 1 to Class 12 are taught in an encouraging, structured environment that prioritizes conceptual mastery, regular practice assessments, and personal attention. Rather than rote memorization, every learner is guided step-by-step from foundational school basics to board-level academic excellence.',
     classesRangeText: 'Students from Class 1 to Class 12 are taught here with dedicated guidance.',
     address: 'Ramauli, Darbhanga, Bihar, India 847101',
     googleMapsUrl: 'https://www.google.com/maps/search/?api=1&query=Ramauli+Darbhanga+Bihar+India+847101',
     phone: '+91 98000 00000 (Update in Admin)',
-    email: 'contact@advicemissionpoint.in',
+    email: 'contact@advicecoachingclasses.in',
     officeHours: 'Mon – Sat · 6:30 AM – 6:30 PM',
     heroMediaUrl: '/src/assets/images/hero_coaching_campus_1795115509590.jpg',
     heroMediaType: 'image',
@@ -27,7 +27,7 @@ export const DEFAULT_SITE_DATA: SiteData = {
   },
   teacher: {
     name: 'Mentor Name (Editable Placeholder)',
-    roleTitle: 'Founder & Lead Educator — Advice Mission Point',
+    roleTitle: 'Founder & Lead Educator — Advice Coaching Classes',
     photoUrl: '/src/assets/images/teacher_portrait_1795115509637.jpg',
     introduction:
       'Dedicated educator committed to transforming everyday student effort into confident academic performance. Passionate about breaking complex concepts into clear, relatable Hindi and English explanations for learners across Class 1 to Class 12.',
@@ -51,7 +51,7 @@ export const DEFAULT_SITE_DATA: SiteData = {
     {
       id: 'gal-1',
       title: 'Main Classroom Study Session',
-      caption: 'Morning batch focused on problem solving and concept clarity at Advice Mission Point, Ramauli.',
+      caption: 'Morning batch focused on problem solving and concept clarity at Advice Coaching Classes, Ramauli.',
       category: 'coaching',
       mediaType: 'image',
       mediaUrl: '/src/assets/images/hero_coaching_campus_1795115509590.jpg',
@@ -155,7 +155,7 @@ export const DEFAULT_SITE_DATA: SiteData = {
       id: 'upd-welcome-batch',
       title: 'New Academic Batch Admissions Open (Class 1 to Class 12)',
       description:
-        'Morning and evening batches are open at Advice Mission Point, Ramauli, Darbhanga. Regular concept classes, weekly practice tests, and bilingual Hindi + English notes are included.',
+        'Morning and evening batches are open at Advice Coaching Classes, Ramauli, Darbhanga. Regular concept classes, weekly practice tests, and bilingual Hindi + English notes are included.',
       date: '2026-11-22',
       mediaType: 'image',
       mediaUrl: '/src/assets/images/hero_coaching_campus_1795115509590.jpg',

@@ -166,7 +166,7 @@ export function FeedbackRatingSection() {
                 Rate &amp; Share Your Feedback
               </h2>
               <p className="mt-3 text-base text-slate-300 leading-relaxed">
-                Share your experience, suggestion, complaint, or praise with Advice Mission Point. Honest feedback helps Surendra Sir continuously improve classes, tests, and student support.
+                Share your experience, suggestion, complaint, or praise with Advice Coaching Classes. Honest feedback helps Surendra Sir continuously improve classes, tests, and student support.
               </p>
             </div>
 

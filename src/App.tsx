@@ -15,6 +15,7 @@ import type { SiteData } from './types/coaching';
 import {
   applyRealtimeCloudUpdate,
   mergeSiteDataPreserveExisting,
+  normalizeSiteBrandData,
 } from './utils/coachingLogic';
 import {
   loadPublicSiteFromFirestore,
@@ -60,23 +61,25 @@ export default function App() {
           (cloudData.dailyUpdates && cloudData.dailyUpdates.length > 0),
       );
       if (hasCloudData) {
-        setSiteData({
-          coaching: { ...baseData.coaching, ...(cloudData.coaching || {}) },
-          socialLinks: { ...baseData.socialLinks, ...(cloudData.socialLinks || {}) },
-          teacher: { ...baseData.teacher, ...(cloudData.teacher || {}) },
-          gallery:
-            cloudData.gallery && cloudData.gallery.length > 0
-              ? cloudData.gallery
-              : baseData.gallery,
-          learningHub:
-            cloudData.learningHub && cloudData.learningHub.length > 0
-              ? cloudData.learningHub
-              : baseData.learningHub,
-          dailyUpdates:
-            cloudData.dailyUpdates && cloudData.dailyUpdates.length > 0
-              ? cloudData.dailyUpdates
-              : baseData.dailyUpdates,
-        });
+        setSiteData(
+          normalizeSiteBrandData({
+            coaching: { ...baseData.coaching, ...(cloudData.coaching || {}) },
+            socialLinks: { ...baseData.socialLinks, ...(cloudData.socialLinks || {}) },
+            teacher: { ...baseData.teacher, ...(cloudData.teacher || {}) },
+            gallery:
+              cloudData.gallery && cloudData.gallery.length > 0
+                ? cloudData.gallery
+                : baseData.gallery,
+            learningHub:
+              cloudData.learningHub && cloudData.learningHub.length > 0
+                ? cloudData.learningHub
+                : baseData.learningHub,
+            dailyUpdates:
+              cloudData.dailyUpdates && cloudData.dailyUpdates.length > 0
+                ? cloudData.dailyUpdates
+                : baseData.dailyUpdates,
+          }),
+        );
         return;
       }
     } catch {

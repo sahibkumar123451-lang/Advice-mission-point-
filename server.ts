@@ -31,6 +31,7 @@ import {
   normalizeAiConversationHistory,
   normalizeExternalUrl,
   normalizeSafeMediaOrExternalUrl,
+  normalizeSiteBrandData,
   normalizeWhatsAppUrl,
   sortDailyUpdatesByDate,
   validateCoachingInfo,
@@ -77,7 +78,7 @@ function readStore(): SiteData {
   try {
     const raw = fs.readFileSync(DATA_FILE, 'utf-8');
     const parsed = JSON.parse(raw) as Partial<SiteData>;
-    return {
+    return normalizeSiteBrandData({
       coaching: { ...DEFAULT_SITE_DATA.coaching, ...(parsed.coaching || {}) },
       socialLinks: { ...DEFAULT_SITE_DATA.socialLinks, ...(parsed.socialLinks || {}) },
       teacher: { ...DEFAULT_SITE_DATA.teacher, ...(parsed.teacher || {}) },
@@ -90,7 +91,7 @@ function readStore(): SiteData {
         : DEFAULT_SITE_DATA.dailyUpdates,
       enquiries: Array.isArray(parsed.enquiries) ? parsed.enquiries : [],
       feedbacks: Array.isArray(parsed.feedbacks) ? parsed.feedbacks : [],
-    };
+    });
   } catch {
     return structuredClone(DEFAULT_SITE_DATA);
   }
@@ -295,10 +296,10 @@ async function startServer() {
           ? 'Respond in simple, clear student-friendly English, adding brief Hindi meaning for difficult terms when helpful.'
           : 'Respond in clear, simple bilingual Hindi and English (easy-to-read English paired with simple Hindi explanation, or Hinglish/Devanagari where natural) so school students from Class 1 to 12 understand effortlessly.';
 
-    const systemInstruction = `You are "Mission AI", the official AI assistant for "Advice Mission Point".
+    const systemInstruction = `You are "Mission AI", the official AI assistant for "Advice Coaching Classes".
 
 Knowledge Base (use strictly when relevant to the user's question):
-- Website / Institute: ${store.coaching.name || 'Advice Mission Point'}
+- Website / Institute: ${store.coaching.name || 'Advice Coaching Classes'}
 - Tagline: "${store.coaching.tagline || 'To Struggle, Take Success.'}"
 - Owner / Founder: Surendra Sir
 - Assistant Name: Mission AI
@@ -306,7 +307,7 @@ Knowledge Base (use strictly when relevant to the user's question):
 - Classes: ${store.teacher.classesTaught || 'Class 1 to Class 12'}
 - Timings: ${store.coaching.officeHours || 'Mon – Sat · 6:30 AM – 6:30 PM'}
 - Subjects: ${(store.teacher.subjectsTaught || []).join(', ') || 'Mathematics, Science (Physics, Chemistry, Biology), English, Social Studies'}
-- Contact Email: ${store.coaching.email || 'contact@advicemissionpoint.in'}
+- Contact Email: ${store.coaching.email || 'contact@advicecoachingclasses.in'}
 - Phone: ${store.coaching.phone || 'Available in Contact section'}
 - Learning Hub Topics: ${publishedTopics || 'Newton Laws of Motion, Algebraic Identities, English Tenses, Photosynthesis'}
 
@@ -477,7 +478,7 @@ STRICT RESPONSE RULES:
       res.json({
         configured: true,
         assistant: 'Mission AI',
-        website: 'Advice Mission Point',
+        website: 'Advice Coaching Classes',
         owner: 'Surendra Sir',
         models: MISSION_AI_ROUTES.map((r) => r.model),
       });
@@ -499,10 +500,10 @@ STRICT RESPONSE RULES:
         const result = await runWithAbortTimeout(15000, (controller) =>
           ai.models.generateContent({
             model: route.model,
-            contents: 'Who is the owner of Advice Mission Point? Reply in 1 short sentence.',
+            contents: 'Who is the owner of Advice Coaching Classes? Reply in 1 short sentence.',
             config: buildGeminiConfig(
               route,
-              'You are Mission AI, assistant of Advice Mission Point owned by Surendra Sir.',
+              'You are Mission AI, assistant of Advice Coaching Classes owned by Surendra Sir.',
               controller.signal,
             ),
           }),
@@ -1259,7 +1260,7 @@ STRICT RESPONSE RULES:
   }
 
   const httpServer = app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Advice Mission Point server running on http://localhost:${PORT}`);
+    console.log(`Advice Coaching Classes server running on http://localhost:${PORT}`);
   });
   httpServer.requestTimeout = 0;
 }

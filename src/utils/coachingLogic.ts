@@ -449,7 +449,7 @@ export function mergeSiteDataPreserveExisting(
     ...baseFeedbacks.filter((f) => !incomingFbMap.has(f.id)),
   ].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 
-  return {
+  return normalizeSiteBrandData({
     coaching: mergedCoaching,
     socialLinks: mergedSocials,
     teacher: mergedTeacher,
@@ -458,6 +458,56 @@ export function mergeSiteDataPreserveExisting(
     dailyUpdates: mergedUpdates,
     enquiries: mergedEnquiries,
     feedbacks: mergedFeedbacks,
+  });
+}
+
+export function replaceLegacyCoachingBrand(value: string): string {
+  if (!value) return value;
+  return value.replace(/advice\s+mission\s+point/gi, 'Advice Coaching Classes');
+}
+
+export function normalizeSiteBrandData(data: SiteData): SiteData {
+  return {
+    ...data,
+    coaching: {
+      ...data.coaching,
+      name: replaceLegacyCoachingBrand(data.coaching.name),
+      tagline: replaceLegacyCoachingBrand(data.coaching.tagline),
+      welcomeHeadline: replaceLegacyCoachingBrand(data.coaching.welcomeHeadline),
+      welcomeSubtitle: replaceLegacyCoachingBrand(data.coaching.welcomeSubtitle),
+      aboutHeading: replaceLegacyCoachingBrand(data.coaching.aboutHeading),
+      aboutDescription: replaceLegacyCoachingBrand(data.coaching.aboutDescription),
+      classesRangeText: replaceLegacyCoachingBrand(data.coaching.classesRangeText),
+      address: replaceLegacyCoachingBrand(data.coaching.address),
+      officeHours: replaceLegacyCoachingBrand(data.coaching.officeHours),
+    },
+    teacher: {
+      ...data.teacher,
+      name: replaceLegacyCoachingBrand(data.teacher.name),
+      roleTitle: replaceLegacyCoachingBrand(data.teacher.roleTitle),
+      introduction: replaceLegacyCoachingBrand(data.teacher.introduction),
+      qualifications: replaceLegacyCoachingBrand(data.teacher.qualifications),
+      experience: replaceLegacyCoachingBrand(data.teacher.experience),
+      classesTaught: replaceLegacyCoachingBrand(data.teacher.classesTaught),
+      skills: (data.teacher.skills || []).map(replaceLegacyCoachingBrand),
+      subjectsTaught: (data.teacher.subjectsTaught || []).map(replaceLegacyCoachingBrand),
+    },
+    gallery: (data.gallery || []).map((item) => ({
+      ...item,
+      title: replaceLegacyCoachingBrand(item.title),
+      caption: replaceLegacyCoachingBrand(item.caption),
+    })),
+    learningHub: (data.learningHub || []).map((res) => ({
+      ...res,
+      title: replaceLegacyCoachingBrand(res.title),
+      summary: replaceLegacyCoachingBrand(res.summary),
+      content: replaceLegacyCoachingBrand(res.content),
+    })),
+    dailyUpdates: (data.dailyUpdates || []).map((upd) => ({
+      ...upd,
+      title: replaceLegacyCoachingBrand(upd.title),
+      description: replaceLegacyCoachingBrand(upd.description),
+    })),
   };
 }
 
@@ -877,7 +927,7 @@ export function applyRealtimeCloudUpdate(
   base: SiteData,
   cloud: Partial<SiteData>,
 ): SiteData {
-  return {
+  return normalizeSiteBrandData({
     coaching: cloud.coaching ? { ...base.coaching, ...cloud.coaching } : base.coaching,
     socialLinks: cloud.socialLinks
       ? { ...base.socialLinks, ...cloud.socialLinks }
@@ -888,7 +938,7 @@ export function applyRealtimeCloudUpdate(
     dailyUpdates: cloud.dailyUpdates !== undefined ? cloud.dailyUpdates : base.dailyUpdates,
     enquiries: base.enquiries,
     feedbacks: base.feedbacks,
-  };
+  });
 }
 
 export function extractFirebaseErrorText(error: unknown): string {

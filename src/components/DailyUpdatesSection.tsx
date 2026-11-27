@@ -84,7 +84,7 @@ export function DailyUpdatesSection({
               Daily Updates
             </h2>
             <p className="mt-2 text-base text-slate-300 leading-relaxed">
-              Daily notices, classroom photos, study videos, and downloadable PDF sheets uploaded by Advice Mission Point — organized by date with all past updates preserved.
+              Daily notices, classroom photos, study videos, and downloadable PDF sheets uploaded by Advice Coaching Classes — organized by date with all past updates preserved.
             </p>
           </div>
 

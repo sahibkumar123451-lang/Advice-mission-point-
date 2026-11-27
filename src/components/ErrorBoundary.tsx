@@ -36,7 +36,7 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
               <AlertTriangle className="w-6 h-6" aria-hidden="true" />
             </div>
             <h1 className="text-xl font-bold text-white">
-              Advice Mission Point — Refresh Needed
+              Advice Coaching Classes — Refresh Needed
             </h1>
             <p className="text-sm text-slate-300 leading-relaxed">
               Something interrupted the page display. Your saved coaching data remains safe. Please reload to continue.

@@ -37,7 +37,7 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
     sendJson(res, 503, {
       configured: false,
       assistant: 'Mission AI',
-      website: 'Advice Mission Point',
+      website: 'Advice Coaching Classes',
       owner: 'Surendra Sir',
       error: 'GEMINI_API_KEY is not configured in Vercel Environment Variables.',
     });
@@ -49,7 +49,7 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
     sendJson(res, 200, {
       configured: true,
       assistant: 'Mission AI',
-      website: 'Advice Mission Point',
+      website: 'Advice Coaching Classes',
       owner: 'Surendra Sir',
       models: MODELS.map((m) => m.model),
     });
@@ -80,7 +80,7 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
     try {
       const config = {
         systemInstruction:
-          'You are Mission AI, assistant of Advice Mission Point owned by Surendra Sir.',
+          'You are Mission AI, assistant of Advice Coaching Classes owned by Surendra Sir.',
         temperature: route.useCompactLiteParams ? 0.55 : 0.65,
         maxOutputTokens: route.useCompactLiteParams ? 128 : 256,
         abortSignal: controller.signal,
@@ -88,7 +88,7 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
 
       const result = await ai.models.generateContent({
         model: route.model,
-        contents: 'Who is the owner of Advice Mission Point? Reply in 1 short sentence.',
+        contents: 'Who is the owner of Advice Coaching Classes? Reply in 1 short sentence.',
         config,
       });
 

@@ -49,6 +49,7 @@ import {
   mergeSiteDataPreserveExisting,
   normalizeExternalUrl,
   normalizeSafeMediaOrExternalUrl,
+  normalizeSiteBrandData,
   normalizeWhatsAppUrl,
   saveAdminDraftToStorage,
   validateCoachingInfo,
@@ -459,6 +460,7 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
       // Keep local/default data if Firestore isn't populated yet or offline
     }
 
+    data = normalizeSiteBrandData(data);
     setAdminData(data);
     setCoachingForm(data.coaching);
     setSocialForm(data.socialLinks);
@@ -638,7 +640,7 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
       setStatusMessage('Backup merged cleanly — all previous and restored items are preserved.');
     } catch (err) {
       if (err instanceof SyntaxError) {
-        setErrorMessage('Invalid backup JSON file. Please select a valid Advice Mission Point backup.');
+        setErrorMessage('Invalid backup JSON file. Please select a valid Advice Coaching Classes backup.');
         setErrorHint(null);
       } else {
         surfaceFirebaseOrNetworkError(err, () => handleRestoreBackupFile(file));
@@ -2038,7 +2040,7 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
         <div className="px-5 sm:px-6 py-4 border-b border-zinc-800 bg-[#09090B] flex items-center justify-between gap-4">
           <div>
             <h2 id="admin-panel-heading" className="text-lg sm:text-xl font-bold text-white">
-              Advice Mission Point — Admin Dashboard
+              Advice Coaching Classes — Admin Dashboard
             </h2>
             <p className="text-xs text-slate-400">
               Manage Daily Updates, User Feedback &amp; Ratings, teacher profile, gallery media, and Learning Hub notes.
