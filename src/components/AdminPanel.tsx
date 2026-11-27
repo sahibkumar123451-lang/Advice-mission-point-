@@ -24,7 +24,6 @@ import type {
   CoachingInfo,
   DailyUpdateItem,
   DailyUpdateMediaType,
-  EnquiryItem,
   GalleryCategory,
   GalleryItem,
   LearningResource,
@@ -51,6 +50,7 @@ import {
   normalizeSafeMediaOrExternalUrl,
   normalizeSiteBrandData,
   normalizeWhatsAppUrl,
+  resolveHeroCaptionDisplay,
   saveAdminDraftToStorage,
   validateCoachingInfo,
   validateGalleryInput,
@@ -80,15 +80,16 @@ import { DEFAULT_SITE_DATA } from '../utils/seedData';
 import { ResilientImage } from './ResilientImage';
 import { AdminDailyUpdatesTab } from './admin/AdminDailyUpdatesTab';
 import { AdminFeedbackTab } from './admin/AdminFeedbackTab';
+import { AdminPhotoDescriptionsTab } from './admin/AdminPhotoDescriptionsTab';
 
 export type AdminTab =
   | 'coaching'
   | 'teacher'
+  | 'photos'
   | 'updates'
   | 'gallery'
   | 'hub'
-  | 'feedback'
-  | 'enquiries';
+  | 'feedback';
 
 interface AdminPanelProps {
   isOpen: boolean;
@@ -574,7 +575,7 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `advice-mission-point-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    a.download = `advice-coaching-classes-backup-${new Date().toISOString().slice(0, 10)}.json`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -1010,6 +1011,228 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
     } catch (err) {
       surfaceFirebaseOrNetworkError(err, () => handleDeleteFeedback(id));
     }
+  }
+
+  // Unified Photo Descriptions Tab Handlers
+  async function handleSaveHeroPhotoDescription(title: string, text: string): Promise<boolean> {
+    if (!authToken || !coachingForm || !socialForm) return false;
+    const isCloudOnly = authToken === 'cloud-session';
+    if (
+      isCloudOnly &&
+      !(await ensureCloudWriterReady(() => handleSaveHeroPhotoDescription(title, text).then(() => undefined)))
+    ) {
+      return false;
+    }
+
+    const nextCoaching: CoachingInfo = {
+      ...coachingForm,
+      heroCaptionTitle: title.trim(),
+      heroCaptionText: text.trim(),
+    };
+
+    setSaving(true);
+    setStatusMessage(null);
+    clearErrorBanner();
+    try {
+      let savedCoaching = nextCoaching;
+      let savedSocial = socialForm;
+
+      if (!isCloudOnly) {
+        try {
+          const res = await fetch('/api/admin/coaching', {
+            method: 'PUT',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-admin-token': authToken,
+            },
+            body: JSON.stringify({ coaching: nextCoaching, socialLinks: socialForm }),
+          });
+          const body = (await res.json()) as {
+            coaching?: CoachingInfo;
+            socialLinks?: SocialLinks;
+            error?: string;
+          };
+          if (!res.ok) {
+            setErrorMessage(body.error || 'Unable to save hero photo description.');
+            return false;
+          }
+          if (body.coaching) savedCoaching = body.coaching;
+          if (body.socialLinks) savedSocial = body.socialLinks;
+        } catch {
+          // Proceed to cloud save
+        }
+      }
+
+      if (cloudUser || isCloudOnly) {
+        await saveCoachingAndSocialsToCloud(savedCoaching, savedSocial);
+      }
+      await fetchAdminData(authToken);
+      await onSiteUpdated();
+      clearAdminDraftFromStorage();
+      setHasLocalPendingDraft(false);
+      setStatusMessage(
+        nextCoaching.heroCaptionTitle || nextCoaching.heroCaptionText
+          ? 'Hero photo description updated!'
+          : 'Hero photo description removed!',
+      );
+      return true;
+    } catch (err) {
+      surfaceFirebaseOrNetworkError(err, async () => {
+        await handleSaveHeroPhotoDescription(title, text);
+      });
+      return false;
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleSaveTeacherPhotoCaption(caption: string): Promise<boolean> {
+    if (!authToken || !teacherForm) return false;
+    const isCloudOnly = authToken === 'cloud-session';
+    if (
+      isCloudOnly &&
+      !(await ensureCloudWriterReady(() => handleSaveTeacherPhotoCaption(caption).then(() => undefined)))
+    ) {
+      return false;
+    }
+
+    const nextTeacher: TeacherProfile = {
+      ...teacherForm,
+      photoCaption: caption.trim(),
+    };
+
+    setSaving(true);
+    setStatusMessage(null);
+    clearErrorBanner();
+    try {
+      let savedTeacher = nextTeacher;
+      if (!isCloudOnly) {
+        try {
+          const res = await fetch('/api/admin/teacher', {
+            method: 'PUT',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-admin-token': authToken,
+            },
+            body: JSON.stringify(nextTeacher),
+          });
+          const body = (await res.json()) as { teacher?: TeacherProfile; error?: string };
+          if (!res.ok) {
+            setErrorMessage(body.error || 'Unable to save teacher photo description.');
+            return false;
+          }
+          if (body.teacher) savedTeacher = body.teacher;
+        } catch {
+          // Proceed to cloud save
+        }
+      }
+
+      if (cloudUser || isCloudOnly) {
+        await saveTeacherToCloud(savedTeacher);
+      }
+      await fetchAdminData(authToken);
+      await onSiteUpdated();
+      clearAdminDraftFromStorage();
+      setHasLocalPendingDraft(false);
+      setStatusMessage(
+        nextTeacher.photoCaption
+          ? 'Teacher photo description updated!'
+          : 'Teacher photo description removed!',
+      );
+      return true;
+    } catch (err) {
+      surfaceFirebaseOrNetworkError(err, async () => {
+        await handleSaveTeacherPhotoCaption(caption);
+      });
+      return false;
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleSaveGalleryPhotoCaption(
+    item: GalleryItem,
+    caption: string,
+  ): Promise<boolean> {
+    if (!authToken) return false;
+    const isCloudOnly = authToken === 'cloud-session';
+    if (
+      isCloudOnly &&
+      !(await ensureCloudWriterReady(() => handleSaveGalleryPhotoCaption(item, caption).then(() => undefined)))
+    ) {
+      return false;
+    }
+
+    let nextItem: GalleryItem = {
+      ...item,
+      caption: caption.trim(),
+    };
+
+    setSaving(true);
+    setStatusMessage(null);
+    clearErrorBanner();
+    try {
+      if (!isCloudOnly) {
+        try {
+          const res = await fetch(`/api/admin/gallery/${item.id}`, {
+            method: 'PUT',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-admin-token': authToken,
+            },
+            body: JSON.stringify({ caption: caption.trim() }),
+          });
+          const body = (await res.json()) as { item?: GalleryItem; error?: string };
+          if (!res.ok) {
+            setErrorMessage(body.error || 'Unable to update photo description.');
+            return false;
+          }
+          if (body.item) nextItem = body.item;
+        } catch {
+          // Proceed to cloud save
+        }
+      }
+
+      if (cloudUser || isCloudOnly) {
+        await saveGalleryItemToCloud(nextItem);
+      }
+      await fetchAdminData(authToken);
+      await onSiteUpdated();
+      clearAdminDraftFromStorage();
+      setHasLocalPendingDraft(false);
+      setStatusMessage(
+        nextItem.caption
+          ? `Updated description for "${nextItem.title}".`
+          : `Removed description from "${nextItem.title}".`,
+      );
+      return true;
+    } catch (err) {
+      surfaceFirebaseOrNetworkError(
+        err,
+        async () => {
+          await handleSaveGalleryPhotoCaption(item, caption);
+        },
+        { pendingItem: nextItem },
+      );
+      return false;
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleSaveDailyUpdatePhotoDescription(
+    item: DailyUpdateItem,
+    description: string,
+  ): Promise<boolean> {
+    return handleSaveEditDailyUpdate(item.id, {
+      title: item.title,
+      description: description.trim(),
+      date: item.date,
+      mediaType: item.mediaType,
+      mediaUrl: item.mediaUrl,
+      fileName: item.fileName,
+      published: item.published,
+    });
   }
 
   async function handleBulkGalleryUpload(files: FileList | null) {
@@ -2017,15 +2240,6 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
     }
   }
 
-  async function deleteEnquiry(id: string) {
-    if (!authToken || authToken === 'cloud-session') return;
-    await fetch(`/api/admin/enquiries/${id}`, {
-      method: 'DELETE',
-      headers: { 'x-admin-token': authToken },
-    });
-    await fetchAdminData(authToken);
-  }
-
   if (!isOpen) return null;
 
   return (
@@ -2133,6 +2347,7 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                   [
                     { id: 'coaching', label: 'Coaching & Hero Media' },
                     { id: 'teacher', label: 'Teacher Profile' },
+                    { id: 'photos', label: 'Photo Descriptions' },
                     {
                       id: 'updates',
                       label: `Daily Updates (${adminData?.dailyUpdates?.length || 0})`,
@@ -2142,10 +2357,6 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                     {
                       id: 'feedback',
                       label: `User Feedback & Ratings (${adminData?.feedbacks?.length || 0})`,
-                    },
-                    {
-                      id: 'enquiries',
-                      label: `Enquiries (${adminData?.enquiries?.length || 0})`,
                     },
                   ] as const
                 ).map((tab) => (
@@ -2668,6 +2879,72 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                             </button>
                           )}
                         </div>
+
+                        {(() => {
+                          const resolvedHeroCaption = resolveHeroCaptionDisplay(coachingForm);
+                          return (
+                            <div className="pt-3 mt-3 border-t border-zinc-800 space-y-2.5">
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <span className="text-xs font-semibold text-slate-200">
+                                  Hero Photo Description Overlay (Optional)
+                                </span>
+                                {resolvedHeroCaption.visible && (
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setCoachingForm({
+                                        ...coachingForm,
+                                        heroCaptionTitle: '',
+                                        heroCaptionText: '',
+                                      })
+                                    }
+                                    className="text-xs font-semibold text-red-400 hover:text-red-300 cursor-pointer"
+                                  >
+                                    Remove Description
+                                  </button>
+                                )}
+                              </div>
+                              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                <div>
+                                  <label htmlFor="admin-hero-caption-title" className={LABEL_CLASS}>
+                                    Hero Photo Label / Heading
+                                  </label>
+                                  <input
+                                    id="admin-hero-caption-title"
+                                    type="text"
+                                    value={resolvedHeroCaption.title}
+                                    onChange={(e) =>
+                                      setCoachingForm({
+                                        ...coachingForm,
+                                        heroCaptionTitle: e.target.value,
+                                      })
+                                    }
+                                    placeholder="Leave blank to hide heading label"
+                                    className={INPUT_CLASS}
+                                  />
+                                </div>
+                                <div>
+                                  <label htmlFor="admin-hero-caption-text" className={LABEL_CLASS}>
+                                    Hero Photo Description Text
+                                  </label>
+                                  <input
+                                    id="admin-hero-caption-text"
+                                    type="text"
+                                    value={resolvedHeroCaption.text}
+                                    onChange={(e) =>
+                                      setCoachingForm({
+                                        ...coachingForm,
+                                        heroCaptionText: e.target.value,
+                                      })
+                                    }
+                                    placeholder="Leave blank to remove description from photo"
+                                    className={INPUT_CLASS}
+                                  />
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })()}
                       </div>
                     </div>
                   </div>
@@ -2735,6 +3012,35 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                             <span>Remove Photo</span>
                           </button>
                         )}
+                      </div>
+
+                      <div className="pt-2 border-t border-zinc-800/80">
+                        <div className="flex items-center justify-between gap-2 mb-1">
+                          <label htmlFor="admin-teacher-photo-caption" className={LABEL_CLASS}>
+                            Teacher Photo Description (Optional)
+                          </label>
+                          {teacherForm.photoCaption?.trim() && (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setTeacherForm({ ...teacherForm, photoCaption: '' })
+                              }
+                              className="text-xs font-semibold text-red-400 hover:text-red-300 cursor-pointer"
+                            >
+                              Remove Description
+                            </button>
+                          )}
+                        </div>
+                        <input
+                          id="admin-teacher-photo-caption"
+                          type="text"
+                          value={teacherForm.photoCaption ?? ''}
+                          onChange={(e) =>
+                            setTeacherForm({ ...teacherForm, photoCaption: e.target.value })
+                          }
+                          placeholder="Optional caption shown on the Teacher photo (leave blank to hide)"
+                          className={INPUT_CLASS}
+                        />
                       </div>
                     </div>
                   </div>
@@ -2858,6 +3164,21 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                     {saving ? 'Saving...' : 'Save Teacher Profile'}
                   </button>
                 </form>
+              )}
+
+              {/* Unified Photo Descriptions Manager */}
+              {activeTab === 'photos' && coachingForm && teacherForm && (
+                <AdminPhotoDescriptionsTab
+                  coaching={coachingForm}
+                  teacher={teacherForm}
+                  gallery={adminData?.gallery || []}
+                  dailyUpdates={adminData?.dailyUpdates || []}
+                  saving={saving}
+                  onSaveHeroDescription={handleSaveHeroPhotoDescription}
+                  onSaveTeacherPhotoCaption={handleSaveTeacherPhotoCaption}
+                  onSaveGalleryPhotoCaption={handleSaveGalleryPhotoCaption}
+                  onSaveDailyUpdatePhotoDescription={handleSaveDailyUpdatePhotoDescription}
+                />
               )}
 
               {/* Tab 3: Daily Updates Management */}
@@ -3200,6 +3521,9 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                                         <div className="text-xs text-slate-400">
                                           {item.category} · {item.published ? 'Published' : 'Draft'}
                                         </div>
+                                        <div className="text-xs text-slate-400 truncate max-w-md mt-0.5">
+                                          {item.caption ? item.caption : <span className="text-slate-500 italic">No description</span>}
+                                        </div>
                                       </div>
                                     </div>
 
@@ -3364,17 +3688,29 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                                         </div>
 
                                         <div className="md:col-span-2">
-                                          <label
-                                            htmlFor={`inline-gal-caption-${item.id}`}
-                                            className={LABEL_CLASS}
-                                          >
-                                            Caption
-                                          </label>
-                                          <input
+                                          <div className="flex items-center justify-between gap-2 mb-1">
+                                            <label
+                                              htmlFor={`inline-gal-caption-${item.id}`}
+                                              className={LABEL_CLASS}
+                                            >
+                                              Photo Description / Caption
+                                            </label>
+                                            {inlineGalCaption.trim() && (
+                                              <button
+                                                type="button"
+                                                onClick={() => setInlineGalCaption('')}
+                                                className="text-xs font-semibold text-red-400 hover:text-red-300 cursor-pointer"
+                                              >
+                                                Clear Description
+                                              </button>
+                                            )}
+                                          </div>
+                                          <textarea
                                             id={`inline-gal-caption-${item.id}`}
-                                            type="text"
+                                            rows={2}
                                             value={inlineGalCaption}
                                             onChange={(e) => setInlineGalCaption(e.target.value)}
+                                            placeholder="Write description or leave blank to remove"
                                             className={INPUT_CLASS}
                                           />
                                         </div>
@@ -3963,46 +4299,6 @@ export function AdminPanel({ isOpen, initialTab, onClose, onSiteUpdated }: Admin
                   onRefreshFeedbacks={handleRefreshFeedbacks}
                   refreshing={refreshingFeedbacks}
                 />
-              )}
-
-              {/* Tab 7: Student / Parent Enquiries */}
-              {activeTab === 'enquiries' && (
-                <div className="space-y-3">
-                  <h3 className="text-sm font-bold text-white">
-                    Submitted Enquiries ({adminData?.enquiries?.length || 0})
-                  </h3>
-                  {(adminData?.enquiries || []).length === 0 ? (
-                    <div className="p-8 rounded-xl border border-zinc-800 bg-[#0D0F14] text-center text-sm text-slate-400">
-                      No enquiries submitted yet.
-                    </div>
-                  ) : (
-                    <div className="divide-y divide-zinc-800 border border-zinc-800 rounded-xl overflow-hidden">
-                      {(adminData?.enquiries || []).map((enq: EnquiryItem) => (
-                        <div
-                          key={enq.id}
-                          className="p-4 bg-[#111318] flex flex-col sm:flex-row sm:items-start justify-between gap-4"
-                        >
-                          <div>
-                            <div className="text-sm font-bold text-white">
-                              {enq.studentName}
-                            </div>
-                            <div className="text-xs font-mono text-blue-400 mt-0.5">
-                              {enq.phoneOrEmail} · {formatDisplayDate(enq.createdAt)}
-                            </div>
-                            <p className="mt-2 text-sm text-slate-300">{enq.message}</p>
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => void deleteEnquiry(enq.id)}
-                            className="px-3 py-1.5 text-xs font-semibold text-red-400 border border-red-500/40 hover:bg-red-950/40 rounded-lg cursor-pointer shrink-0"
-                          >
-                            Remove
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
               )}
             </div>
           )}

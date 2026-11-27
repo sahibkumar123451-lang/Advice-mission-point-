@@ -192,6 +192,12 @@ export async function loadPublicSiteFromFirestore(): Promise<Partial<SiteData>> 
         officeHours: String(data.officeHours || ''),
         heroMediaUrl: typeof data.heroMediaUrl === 'string' ? data.heroMediaUrl : '',
         heroMediaType: data.heroMediaType === 'video' ? 'video' : 'image',
+        ...(typeof data.heroCaptionTitle === 'string'
+          ? { heroCaptionTitle: data.heroCaptionTitle }
+          : {}),
+        ...(typeof data.heroCaptionText === 'string'
+          ? { heroCaptionText: data.heroCaptionText }
+          : {}),
       };
     }
 
@@ -211,6 +217,9 @@ export async function loadPublicSiteFromFirestore(): Promise<Partial<SiteData>> 
         name: String(data.name || ''),
         roleTitle: String(data.roleTitle || ''),
         photoUrl: String(data.photoUrl || ''),
+        ...(typeof data.photoCaption === 'string'
+          ? { photoCaption: data.photoCaption }
+          : {}),
         introduction: String(data.introduction || ''),
         qualifications: String(data.qualifications || ''),
         experience: String(data.experience || ''),
@@ -379,6 +388,12 @@ export function subscribeToPublicSiteFromFirestore(
           officeHours: String(data.officeHours || ''),
           heroMediaUrl: typeof data.heroMediaUrl === 'string' ? data.heroMediaUrl : '',
           heroMediaType: data.heroMediaType === 'video' ? 'video' : 'image',
+          ...(typeof data.heroCaptionTitle === 'string'
+            ? { heroCaptionTitle: data.heroCaptionTitle }
+            : {}),
+          ...(typeof data.heroCaptionText === 'string'
+            ? { heroCaptionText: data.heroCaptionText }
+            : {}),
         };
         emitIfPopulated();
       }
@@ -412,6 +427,9 @@ export function subscribeToPublicSiteFromFirestore(
           name: String(data.name || ''),
           roleTitle: String(data.roleTitle || ''),
           photoUrl: String(data.photoUrl || ''),
+          ...(typeof data.photoCaption === 'string'
+            ? { photoCaption: data.photoCaption }
+            : {}),
           introduction: String(data.introduction || ''),
           qualifications: String(data.qualifications || ''),
           experience: String(data.experience || ''),
@@ -673,6 +691,14 @@ export async function saveCoachingAndSocialsToCloud(
             officeHours: (coaching.officeHours || '').slice(0, 160),
             heroMediaUrl: (coaching.heroMediaUrl || '').slice(0, 800000),
             heroMediaType: coaching.heroMediaType === 'video' ? 'video' : 'image',
+            heroCaptionTitle:
+              coaching.heroCaptionTitle !== undefined
+                ? coaching.heroCaptionTitle.trim().slice(0, 160)
+                : undefined,
+            heroCaptionText:
+              coaching.heroCaptionText !== undefined
+                ? coaching.heroCaptionText.trim().slice(0, 500)
+                : undefined,
             updatedAt: serverTimestamp(),
           }),
         ),
@@ -711,6 +737,10 @@ export async function saveTeacherToCloud(teacher: TeacherProfile): Promise<void>
             name: teacher.name.slice(0, 160),
             roleTitle: (teacher.roleTitle || '').slice(0, 200),
             photoUrl: (teacher.photoUrl || '').slice(0, 800000),
+            photoCaption:
+              teacher.photoCaption !== undefined
+                ? teacher.photoCaption.trim().slice(0, 500)
+                : '',
             introduction: teacher.introduction.slice(0, 3000),
             qualifications: teacher.qualifications.slice(0, 400),
             experience: teacher.experience.slice(0, 400),

@@ -49,7 +49,7 @@ service cloud.firestore {
           'name', 'tagline', 'welcomeHeadline', 'welcomeSubtitle',
           'aboutHeading', 'aboutDescription', 'classesRangeText',
           'address', 'googleMapsUrl', 'phone', 'email', 'officeHours',
-          'heroMediaUrl', 'heroMediaType', 'updatedAt'
+          'heroMediaUrl', 'heroMediaType', 'heroCaptionTitle', 'heroCaptionText', 'updatedAt'
         ]) &&
         data.name is string && data.name.size() >= 1 && data.name.size() <= 120 &&
         data.tagline is string && data.tagline.size() >= 1 && data.tagline.size() <= 200 &&
@@ -65,6 +65,8 @@ service cloud.firestore {
         (!('officeHours' in data) || (data.officeHours is string && data.officeHours.size() <= 160)) &&
         (!('heroMediaUrl' in data) || (data.heroMediaUrl is string && data.heroMediaUrl.size() <= 800000)) &&
         (!('heroMediaType' in data) || data.heroMediaType in ['image', 'video']) &&
+        (!('heroCaptionTitle' in data) || (data.heroCaptionTitle is string && data.heroCaptionTitle.size() <= 160)) &&
+        (!('heroCaptionText' in data) || (data.heroCaptionText is string && data.heroCaptionText.size() <= 500)) &&
         data.updatedAt is timestamp;
     }
 
@@ -81,13 +83,14 @@ service cloud.firestore {
     function isValidTeacherProfile(data) {
       return data.keys().hasAll(['name', 'introduction', 'qualifications', 'experience', 'classesTaught', 'updatedAt']) &&
         data.keys().hasOnly([
-          'name', 'roleTitle', 'photoUrl', 'introduction',
+          'name', 'roleTitle', 'photoUrl', 'photoCaption', 'introduction',
           'qualifications', 'experience', 'skills',
           'classesTaught', 'subjectsTaught', 'updatedAt'
         ]) &&
         data.name is string && data.name.size() >= 1 && data.name.size() <= 160 &&
         (!('roleTitle' in data) || (data.roleTitle is string && data.roleTitle.size() <= 200)) &&
         (!('photoUrl' in data) || (data.photoUrl is string && data.photoUrl.size() <= 800000)) &&
+        (!('photoCaption' in data) || (data.photoCaption is string && data.photoCaption.size() <= 500)) &&
         data.introduction is string && data.introduction.size() >= 1 && data.introduction.size() <= 3000 &&
         data.qualifications is string && data.qualifications.size() >= 1 && data.qualifications.size() <= 400 &&
         data.experience is string && data.experience.size() >= 1 && data.experience.size() <= 400 &&
@@ -214,7 +217,7 @@ service cloud.firestore {
           'name', 'tagline', 'welcomeHeadline', 'welcomeSubtitle',
           'aboutHeading', 'aboutDescription', 'classesRangeText',
           'address', 'googleMapsUrl', 'phone', 'email', 'officeHours',
-          'heroMediaUrl', 'heroMediaType', 'updatedAt'
+          'heroMediaUrl', 'heroMediaType', 'heroCaptionTitle', 'heroCaptionText', 'updatedAt'
         ]);
       allow delete: if isAdmin() && isValidId(configId);
     }
@@ -238,7 +241,7 @@ service cloud.firestore {
       allow update: if isAdmin() && isValidId(configId) && configId == 'main' &&
         isValidTeacherProfile(incoming()) && incoming().updatedAt == request.time &&
         incoming().diff(existing()).affectedKeys().hasOnly([
-          'name', 'roleTitle', 'photoUrl', 'introduction',
+          'name', 'roleTitle', 'photoUrl', 'photoCaption', 'introduction',
           'qualifications', 'experience', 'skills',
           'classesTaught', 'subjectsTaught', 'updatedAt'
         ]);

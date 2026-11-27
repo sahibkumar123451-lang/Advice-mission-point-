@@ -8,7 +8,6 @@ import { GoogleGenAI } from '@google/genai';
 import type {
   CoachingInfo,
   DailyUpdateItem,
-  EnquiryItem,
   FeedbackRatingItem,
   GalleryItem,
   LearningResource,
@@ -36,7 +35,6 @@ import {
   sortDailyUpdatesByDate,
   validateCoachingInfo,
   validateDailyUpdateInput,
-  validateEnquiryInput,
   validateFeedbackInput,
   validateGalleryInput,
   validateLearningResourceInput,
@@ -185,7 +183,7 @@ async function startServer() {
   app.use(express.json({ limit: '60mb' }));
   app.use('/uploads', express.static(UPLOADS_DIR));
 
-  // Public site data (only published gallery, learning hub & daily updates; NEVER private enquiries or feedbacks)
+  // Public site data (only published gallery, learning hub & daily updates; NEVER private feedbacks)
   app.get('/api/site', (_req: Request, res: Response) => {
     const data = readStore();
     res.json({
@@ -198,27 +196,6 @@ async function startServer() {
         (data.dailyUpdates || []).filter((item) => item.published),
       ),
     });
-  });
-
-  // Public contact / enquiry submission
-  app.post('/api/enquiries', (req: Request, res: Response) => {
-    const body = req.body as Partial<EnquiryItem>;
-    const validation = validateEnquiryInput(body);
-    if (!validation.valid) {
-      res.status(400).json({ error: validation.error });
-      return;
-    }
-    const store = readStore();
-    const enquiry: EnquiryItem = {
-      id: `enq-${crypto.randomUUID().slice(0, 8)}`,
-      studentName: body.studentName!.trim(),
-      phoneOrEmail: body.phoneOrEmail!.trim(),
-      message: body.message!.trim(),
-      createdAt: new Date().toISOString(),
-    };
-    store.enquiries = [enquiry, ...(store.enquiries || [])];
-    writeStore(store);
-    res.status(201).json({ ok: true, enquiry });
   });
 
   // Public User Rating & Feedback submission (strict anti-duplicate email check; private PII never exposed publicly)
@@ -812,6 +789,14 @@ STRICT RESPONSE RULES:
         coaching?.heroMediaType === 'video' || isVideoFileOrUrl(nextHeroUrl || '')
           ? 'video'
           : 'image',
+      heroCaptionTitle:
+        coaching?.heroCaptionTitle !== undefined
+          ? coaching.heroCaptionTitle.trim().slice(0, 160)
+          : store.coaching.heroCaptionTitle,
+      heroCaptionText:
+        coaching?.heroCaptionText !== undefined
+          ? coaching.heroCaptionText.trim().slice(0, 500)
+          : store.coaching.heroCaptionText,
       googleMapsUrl: normalizeExternalUrl(coaching?.googleMapsUrl ?? store.coaching.googleMapsUrl),
     };
     const nextSocial: SocialLinks = {
@@ -842,8 +827,14 @@ STRICT RESPONSE RULES:
       ...incoming,
       photoUrl:
         incoming.photoUrl !== undefined
-          ? normalizeSafeMediaOrExternalUrl(incoming.photoUrl) || store.teacher.photoUrl
+          ? incoming.photoUrl.trim()
+            ? normalizeSafeMediaOrExternalUrl(incoming.photoUrl)
+            : ''
           : store.teacher.photoUrl,
+      photoCaption:
+        incoming.photoCaption !== undefined
+          ? incoming.photoCaption.trim().slice(0, 500)
+          : store.teacher.photoCaption,
       skills: Array.isArray(incoming.skills)
         ? incoming.skills.map((s) => s.trim()).filter(Boolean)
         : store.teacher.skills,
@@ -1091,14 +1082,6 @@ STRICT RESPONSE RULES:
       return;
     }
     store.learningHub = nextHub;
-    writeStore(store);
-    res.json({ ok: true });
-  });
-
-  app.delete('/api/admin/enquiries/:id', requireAdmin, (req: Request, res: Response) => {
-    const { id } = req.params;
-    const store = readStore();
-    store.enquiries = (store.enquiries || []).filter((e) => e.id !== id);
     writeStore(store);
     res.json({ ok: true });
   });

@@ -22,13 +22,23 @@ export function TeacherProfileSection({ teacher }: TeacherProfileSectionProps) {
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-10 lg:gap-12 items-stretch bg-[#111318] rounded-2xl border border-zinc-800 p-6 sm:p-8 lg:p-10 shadow-xl">
           {/* Teacher Photo */}
           <div className="lg:col-span-4 flex">
-            <div className="w-full min-h-[320px] lg:min-h-full rounded-xl overflow-hidden border border-zinc-800 bg-[#09090B]">
+            <div className="relative w-full min-h-[320px] lg:min-h-full rounded-xl overflow-hidden border border-zinc-800 bg-[#09090B]">
               <ResilientImage
                 src={teacher.photoUrl}
                 alt={teacher.name}
                 fallbackLabel={teacher.name}
                 className="w-full h-full object-cover object-top"
               />
+              {teacher.photoCaption?.trim() && (
+                <div
+                  data-testid="teacher-photo-caption"
+                  className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/90 via-black/60 to-transparent p-4 text-white"
+                >
+                  <p className="text-xs sm:text-sm font-medium text-slate-100 leading-snug">
+                    {teacher.photoCaption.trim()}
+                  </p>
+                </div>
+              )}
             </div>
           </div>
 
@@ -94,9 +104,9 @@ export function TeacherProfileSection({ teacher }: TeacherProfileSectionProps) {
                 Core Teaching Skills
               </h4>
               <ul className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                {teacher.skills.map((skill) => (
+                {teacher.skills.map((skill, idx) => (
                   <li
-                    key={skill}
+                    key={`${skill}-${idx}`}
                     className="flex items-start gap-2 text-sm text-slate-300"
                   >
                     <CheckCircle2

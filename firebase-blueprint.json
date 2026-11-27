@@ -19,6 +19,8 @@
         "officeHours": { "type": "string", "maxLength": 160 },
         "heroMediaUrl": { "type": "string", "maxLength": 800000 },
         "heroMediaType": { "type": "string", "enum": ["image", "video"] },
+        "heroCaptionTitle": { "type": "string", "maxLength": 160 },
+        "heroCaptionText": { "type": "string", "maxLength": 500 },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["name", "tagline", "address", "googleMapsUrl", "updatedAt"]
@@ -44,6 +46,7 @@
         "name": { "type": "string", "minLength": 1, "maxLength": 160 },
         "roleTitle": { "type": "string", "maxLength": 200 },
         "photoUrl": { "type": "string", "maxLength": 800000 },
+        "photoCaption": { "type": "string", "maxLength": 500 },
         "introduction": { "type": "string", "minLength": 1, "maxLength": 3000 },
         "qualifications": { "type": "string", "minLength": 1, "maxLength": 400 },
         "experience": { "type": "string", "minLength": 1, "maxLength": 400 },

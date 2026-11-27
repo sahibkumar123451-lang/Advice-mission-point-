@@ -349,9 +349,20 @@ export function AdminDailyUpdatesTab({
           </div>
 
           <div className="md:col-span-3">
-            <label htmlFor="admin-upd-desc" className="block text-xs font-semibold text-slate-300 mb-1">
-              Update Description / Details
-            </label>
+            <div className="flex items-center justify-between gap-2 mb-1">
+              <label htmlFor="admin-upd-desc" className="block text-xs font-semibold text-slate-300">
+                Update Description / Details
+              </label>
+              {description.trim() && (
+                <button
+                  type="button"
+                  onClick={() => setDescription('')}
+                  className="text-xs font-semibold text-red-400 hover:text-red-300 cursor-pointer"
+                >
+                  Clear Description
+                </button>
+              )}
+            </div>
             <textarea
               id="admin-upd-desc"
               rows={3}
@@ -642,12 +653,23 @@ export function AdminDailyUpdatesTab({
                           </div>
                         </div>
                         <div className="md:col-span-3">
-                          <label
-                            htmlFor={`inline-upd-desc-${item.id}`}
-                            className="block text-xs font-semibold text-slate-300 mb-1"
-                          >
-                            Description
-                          </label>
+                          <div className="flex items-center justify-between gap-2 mb-1">
+                            <label
+                              htmlFor={`inline-upd-desc-${item.id}`}
+                              className="block text-xs font-semibold text-slate-300"
+                            >
+                              Description
+                            </label>
+                            {editDescription.trim() && (
+                              <button
+                                type="button"
+                                onClick={() => setEditDescription('')}
+                                className="text-xs font-semibold text-red-400 hover:text-red-300 cursor-pointer"
+                              >
+                                Clear Description
+                              </button>
+                            )}
+                          </div>
                           <textarea
                             id={`inline-upd-desc-${item.id}`}
                             rows={3}

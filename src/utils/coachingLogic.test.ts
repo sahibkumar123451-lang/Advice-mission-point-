@@ -35,6 +35,7 @@ import {
   normalizeSiteBrandData,
   normalizeWhatsAppUrl,
   replaceLegacyCoachingBrand,
+  resolveHeroCaptionDisplay,
   retryWithExponentialBackoff,
   saveAdminDraftToStorage,
   setCachedMissionAiResponse,
@@ -787,6 +788,87 @@ test('replaceLegacyCoachingBrand and normalizeSiteBrandData convert Advice Missi
   ]);
 });
 
+test('resolveHeroCaptionDisplay handles legacy fallback, custom edits, and explicit removal', () => {
+  const legacy = resolveHeroCaptionDisplay({
+    ...DEFAULT_SITE_DATA.coaching,
+    heroCaptionTitle: undefined,
+    heroCaptionText: undefined,
+  });
+  assert.equal(legacy.visible, true);
+  assert.equal(legacy.title, 'Campus & Classroom Mentorship');
+  assert.ok(legacy.text.includes(DEFAULT_SITE_DATA.coaching.address));
 
+  const custom = resolveHeroCaptionDisplay({
+    ...DEFAULT_SITE_DATA.coaching,
+    heroCaptionTitle: 'Morning Foundation Batch',
+    heroCaptionText: '6:30 AM Daily Science & Maths',
+  });
+  assert.equal(custom.visible, true);
+  assert.equal(custom.title, 'Morning Foundation Batch');
+  assert.equal(custom.text, '6:30 AM Daily Science & Maths');
 
+  const removed = resolveHeroCaptionDisplay({
+    ...DEFAULT_SITE_DATA.coaching,
+    heroCaptionTitle: '',
+    heroCaptionText: '',
+  });
+  assert.equal(removed.visible, false);
+  assert.equal(removed.title, '');
+  assert.equal(removed.text, '');
 
+  const normalizedCleared = normalizeSiteBrandData({
+    ...DEFAULT_SITE_DATA,
+    coaching: {
+      ...DEFAULT_SITE_DATA.coaching,
+      heroCaptionTitle: '',
+      heroCaptionText: '',
+    },
+    teacher: {
+      ...DEFAULT_SITE_DATA.teacher,
+      photoCaption: '',
+    },
+  });
+  assert.equal(normalizedCleared.coaching.heroCaptionTitle, '');
+  assert.equal(normalizedCleared.coaching.heroCaptionText, '');
+  assert.equal(normalizedCleared.teacher.photoCaption, '');
+});
+
+test('mergeSiteDataPreserveExisting and applyRealtimeCloudUpdate ignore undefined caption keys from cloud', () => {
+  const localCleared = {
+    ...DEFAULT_SITE_DATA,
+    coaching: {
+      ...DEFAULT_SITE_DATA.coaching,
+      heroCaptionTitle: '',
+      heroCaptionText: '',
+    },
+    teacher: {
+      ...DEFAULT_SITE_DATA.teacher,
+      photoCaption: '',
+    },
+  };
+
+  const cloudWithoutCaptionKeys = {
+    coaching: {
+      ...DEFAULT_SITE_DATA.coaching,
+      address: 'Ramauli, Darbhanga',
+      heroCaptionTitle: undefined,
+      heroCaptionText: undefined,
+    },
+    teacher: {
+      ...DEFAULT_SITE_DATA.teacher,
+      photoCaption: undefined,
+    },
+  };
+
+  const mergedAdmin = mergeSiteDataPreserveExisting(localCleared, cloudWithoutCaptionKeys);
+  assert.equal(mergedAdmin.coaching.heroCaptionTitle, '');
+  assert.equal(mergedAdmin.coaching.heroCaptionText, '');
+  assert.equal(mergedAdmin.teacher.photoCaption, '');
+  assert.equal(resolveHeroCaptionDisplay(mergedAdmin.coaching).visible, false);
+
+  const mergedRealtime = applyRealtimeCloudUpdate(localCleared, cloudWithoutCaptionKeys);
+  assert.equal(mergedRealtime.coaching.heroCaptionTitle, '');
+  assert.equal(mergedRealtime.coaching.heroCaptionText, '');
+  assert.equal(mergedRealtime.teacher.photoCaption, '');
+  assert.equal(resolveHeroCaptionDisplay(mergedRealtime.coaching).visible, false);
+});

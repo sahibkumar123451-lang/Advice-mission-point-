@@ -8,7 +8,6 @@ import { Footer } from './components/Footer';
 import { GallerySection } from './components/GallerySection';
 import { HeroSection } from './components/HeroSection';
 import { LearningHubSection } from './components/LearningHubSection';
-import { MissionAI } from './components/MissionAI';
 import { Navbar } from './components/Navbar';
 import { TeacherProfileSection } from './components/TeacherProfileSection';
 import type { SiteData } from './types/coaching';
@@ -27,11 +26,6 @@ export default function App() {
   const [siteData, setSiteData] = useState<SiteData>(DEFAULT_SITE_DATA);
   const [adminOpen, setAdminOpen] = useState(false);
   const [adminInitialTab, setAdminInitialTab] = useState<AdminTab>('coaching');
-  const [aiFocusTrigger, setAiFocusTrigger] = useState(0);
-  const [aiExternalPrompt, setAiExternalPrompt] = useState<{
-    text: string;
-    id: number;
-  } | null>(null);
 
   const openAdminTab = useCallback((tab: AdminTab = 'coaching') => {
     setAdminInitialTab(tab);
@@ -62,10 +56,10 @@ export default function App() {
       );
       if (hasCloudData) {
         setSiteData(
-          normalizeSiteBrandData({
-            coaching: { ...baseData.coaching, ...(cloudData.coaching || {}) },
-            socialLinks: { ...baseData.socialLinks, ...(cloudData.socialLinks || {}) },
-            teacher: { ...baseData.teacher, ...(cloudData.teacher || {}) },
+          applyRealtimeCloudUpdate(baseData, {
+            coaching: cloudData.coaching,
+            socialLinks: cloudData.socialLinks,
+            teacher: cloudData.teacher,
             gallery:
               cloudData.gallery && cloudData.gallery.length > 0
                 ? cloudData.gallery
@@ -97,34 +91,15 @@ export default function App() {
     return () => unsubscribe();
   }, [loadSiteData]);
 
-  const jumpToMissionAI = useCallback((promptText?: string) => {
-    if (promptText) {
-      setAiExternalPrompt({ text: promptText, id: Date.now() });
-    }
-    setAiFocusTrigger((n) => n + 1);
-    const section = document.getElementById('mission-ai');
-    if (section) {
-      section.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    }
-  }, []);
-
-  const clearExternalPrompt = useCallback(() => {
-    setAiExternalPrompt(null);
-  }, []);
-
   return (
     <div className="min-h-screen flex flex-col bg-[#09090B] text-slate-100">
       <Navbar
         coachingName={siteData.coaching.name}
-        onAskDoubtClick={() => jumpToMissionAI()}
         onOpenAdminClick={() => openAdminTab('coaching')}
       />
 
       <main className="flex-1">
-        <HeroSection
-          coaching={siteData.coaching}
-          onAskQuestionClick={() => jumpToMissionAI()}
-        />
+        <HeroSection coaching={siteData.coaching} />
 
         <AboutSection coaching={siteData.coaching} />
 
@@ -137,17 +112,7 @@ export default function App() {
 
         <LearningHubSection
           resources={siteData.learningHub}
-          onAskAIAboutTopic={(title) =>
-            jumpToMissionAI(`Explain "${title}" step by step with an easy example.`)
-          }
           onManageHubClick={() => openAdminTab('hub')}
-        />
-
-        <MissionAI
-          coachingName={siteData.coaching.name}
-          externalPrompt={aiExternalPrompt}
-          onExternalPromptConsumed={clearExternalPrompt}
-          focusTrigger={aiFocusTrigger}
         />
 
         <GallerySection
@@ -166,7 +131,6 @@ export default function App() {
       <Footer
         coaching={siteData.coaching}
         socialLinks={siteData.socialLinks}
-        onAskDoubtClick={() => jumpToMissionAI()}
         onOpenAdminClick={() => openAdminTab('coaching')}
       />
 

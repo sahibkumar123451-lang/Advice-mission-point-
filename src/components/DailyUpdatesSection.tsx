@@ -88,8 +88,8 @@ export function DailyUpdatesSection({
             </p>
           </div>
 
-          <div className="flex flex-col sm:flex-row lg:flex-col items-stretch sm:items-center lg:items-end gap-3 w-full lg:w-80">
-            <div className="w-full">
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 w-full lg:w-auto">
+            <div className="w-full sm:w-64 lg:w-72">
               <label htmlFor="daily-updates-search" className="sr-only">
                 Search Daily Updates
               </label>
@@ -104,7 +104,7 @@ export function DailyUpdatesSection({
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                   placeholder="Search updates by title or date..."
-                  className="w-full pl-10 pr-4 py-2.5 text-sm bg-[#141720] border border-zinc-700 rounded-lg text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="w-full h-[42px] pl-10 pr-4 text-sm bg-[#141720] border border-zinc-700 rounded-lg text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
               </div>
             </div>
@@ -113,9 +113,9 @@ export function DailyUpdatesSection({
               <button
                 type="button"
                 onClick={onManageUpdatesClick}
-                className="inline-flex items-center justify-center gap-2 px-3.5 py-2 text-xs font-semibold text-slate-100 bg-[#141720] border border-zinc-700 hover:border-blue-500/60 hover:bg-zinc-900 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                className="inline-flex items-center justify-center gap-2 h-[42px] px-4 text-xs sm:text-sm font-semibold text-slate-100 bg-[#141720] border border-zinc-700 hover:border-blue-500/60 hover:bg-zinc-900 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
               >
-                <FolderPlus className="w-3.5 h-3.5 text-blue-400" aria-hidden="true" />
+                <FolderPlus className="w-4 h-4 text-blue-400 shrink-0" aria-hidden="true" />
                 <span>Manage Daily Updates</span>
               </button>
             )}
@@ -129,7 +129,7 @@ export function DailyUpdatesSection({
               key={tab.id}
               type="button"
               onClick={() => setFilterType(tab.id)}
-              className={`px-3.5 py-2 text-xs sm:text-sm font-semibold rounded-lg transition-colors whitespace-nowrap cursor-pointer ${
+              className={`inline-flex items-center justify-center h-9 px-4 text-xs sm:text-sm font-semibold rounded-lg transition-colors whitespace-nowrap cursor-pointer ${
                 filterType === tab.id
                   ? 'bg-blue-600 text-white border border-blue-500'
                   : 'bg-[#141720] text-slate-300 border border-zinc-800 hover:border-zinc-700 hover:text-white'
@@ -260,14 +260,14 @@ export function DailyUpdatesSection({
                       )}
                     </div>
 
-                    <div className="mt-5 pt-4 border-t border-zinc-800 flex items-center justify-between gap-3">
+                    <div className="mt-5 pt-4 border-t border-zinc-800 flex flex-wrap items-center justify-between gap-3">
                       <button
                         type="button"
                         onClick={() => {
                           setShowInlinePdf(true);
                           setSelectedUpdate(item);
                         }}
-                        className="text-xs sm:text-sm font-semibold text-blue-400 hover:text-blue-300 cursor-pointer"
+                        className="inline-flex items-center justify-center h-9 px-3.5 text-xs sm:text-sm font-semibold text-blue-300 bg-blue-600/15 border border-blue-500/35 hover:bg-blue-600/25 rounded-lg transition-colors cursor-pointer"
                       >
                         {kind === 'image'
                           ? 'Open Photo →'
@@ -282,9 +282,9 @@ export function DailyUpdatesSection({
                         <a
                           href={item.mediaUrl}
                           download={item.fileName || `${item.title}.pdf`}
-                          className="inline-flex items-center gap-1 text-xs font-semibold text-slate-300 hover:text-white"
+                          className="inline-flex items-center justify-center gap-1.5 h-9 px-3 text-xs font-semibold text-slate-200 bg-[#09090B] border border-zinc-700 hover:border-blue-500/60 hover:text-white rounded-lg transition-colors"
                         >
-                          <Download className="w-3.5 h-3.5 text-red-400" aria-hidden="true" />
+                          <Download className="w-3.5 h-3.5 text-red-400 shrink-0" aria-hidden="true" />
                           <span>PDF</span>
                         </a>
                       )}

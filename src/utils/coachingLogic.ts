@@ -373,13 +373,28 @@ export function normalizeAiConversationHistory(
   }));
 }
 
+function omitUndefinedKeys<T extends object>(obj?: Partial<T>): Partial<T> {
+  if (!obj) return {};
+  const result: Partial<T> = {};
+  for (const [key, value] of Object.entries(obj)) {
+    if (value !== undefined) {
+      (result as Record<string, unknown>)[key] = value;
+    }
+  }
+  return result;
+}
+
 export function mergeSiteDataPreserveExisting(
   base: SiteData,
   incoming: Partial<SiteData>,
 ): SiteData {
+  const safeCoaching = omitUndefinedKeys<CoachingInfo>(incoming.coaching);
+  const safeSocials = omitUndefinedKeys<SocialLinks>(incoming.socialLinks);
+  const safeTeacher = omitUndefinedKeys<TeacherProfile>(incoming.teacher);
+
   const mergedCoaching: CoachingInfo = {
     ...base.coaching,
-    ...(incoming.coaching || {}),
+    ...safeCoaching,
     name: incoming.coaching?.name?.trim() || base.coaching.name,
     tagline: incoming.coaching?.tagline?.trim() || base.coaching.tagline,
     address: incoming.coaching?.address?.trim() || base.coaching.address,
@@ -388,7 +403,7 @@ export function mergeSiteDataPreserveExisting(
 
   const mergedSocials: SocialLinks = {
     ...base.socialLinks,
-    ...(incoming.socialLinks || {}),
+    ...safeSocials,
     whatsapp: incoming.socialLinks?.whatsapp?.trim() || base.socialLinks.whatsapp,
     instagram: incoming.socialLinks?.instagram?.trim() || base.socialLinks.instagram,
     facebook: incoming.socialLinks?.facebook?.trim() || base.socialLinks.facebook,
@@ -397,7 +412,7 @@ export function mergeSiteDataPreserveExisting(
 
   const mergedTeacher: TeacherProfile = {
     ...base.teacher,
-    ...(incoming.teacher || {}),
+    ...safeTeacher,
     name: incoming.teacher?.name?.trim() || base.teacher.name,
     skills:
       Array.isArray(incoming.teacher?.skills) && incoming.teacher.skills.length > 0
@@ -480,11 +495,23 @@ export function normalizeSiteBrandData(data: SiteData): SiteData {
       classesRangeText: replaceLegacyCoachingBrand(data.coaching.classesRangeText),
       address: replaceLegacyCoachingBrand(data.coaching.address),
       officeHours: replaceLegacyCoachingBrand(data.coaching.officeHours),
+      heroCaptionTitle:
+        typeof data.coaching.heroCaptionTitle === 'string'
+          ? replaceLegacyCoachingBrand(data.coaching.heroCaptionTitle)
+          : undefined,
+      heroCaptionText:
+        typeof data.coaching.heroCaptionText === 'string'
+          ? replaceLegacyCoachingBrand(data.coaching.heroCaptionText)
+          : undefined,
     },
     teacher: {
       ...data.teacher,
       name: replaceLegacyCoachingBrand(data.teacher.name),
       roleTitle: replaceLegacyCoachingBrand(data.teacher.roleTitle),
+      photoCaption:
+        typeof data.teacher.photoCaption === 'string'
+          ? replaceLegacyCoachingBrand(data.teacher.photoCaption)
+          : undefined,
       introduction: replaceLegacyCoachingBrand(data.teacher.introduction),
       qualifications: replaceLegacyCoachingBrand(data.teacher.qualifications),
       experience: replaceLegacyCoachingBrand(data.teacher.experience),
@@ -928,11 +955,15 @@ export function applyRealtimeCloudUpdate(
   cloud: Partial<SiteData>,
 ): SiteData {
   return normalizeSiteBrandData({
-    coaching: cloud.coaching ? { ...base.coaching, ...cloud.coaching } : base.coaching,
+    coaching: cloud.coaching
+      ? { ...base.coaching, ...omitUndefinedKeys<CoachingInfo>(cloud.coaching) }
+      : base.coaching,
     socialLinks: cloud.socialLinks
-      ? { ...base.socialLinks, ...cloud.socialLinks }
+      ? { ...base.socialLinks, ...omitUndefinedKeys<SocialLinks>(cloud.socialLinks) }
       : base.socialLinks,
-    teacher: cloud.teacher ? { ...base.teacher, ...cloud.teacher } : base.teacher,
+    teacher: cloud.teacher
+      ? { ...base.teacher, ...omitUndefinedKeys<TeacherProfile>(cloud.teacher) }
+      : base.teacher,
     gallery: cloud.gallery !== undefined ? cloud.gallery : base.gallery,
     learningHub: cloud.learningHub !== undefined ? cloud.learningHub : base.learningHub,
     dailyUpdates: cloud.dailyUpdates !== undefined ? cloud.dailyUpdates : base.dailyUpdates,
@@ -1427,6 +1458,38 @@ export function getUploadLimitForMediaType(
   }
   return { kind: 'unknown', maxBytes: 0, label: '0 MB' };
 }
+
+export function resolveHeroCaptionDisplay(coaching: CoachingInfo): {
+  title: string;
+  text: string;
+  visible: boolean;
+} {
+  const hasExplicitCaptionFields =
+    coaching.heroCaptionTitle !== undefined || coaching.heroCaptionText !== undefined;
+
+  if (hasExplicitCaptionFields) {
+    const title = (coaching.heroCaptionTitle ?? '').trim();
+    const text = (coaching.heroCaptionText ?? '').trim();
+    return {
+      title,
+      text,
+      visible: Boolean(title || text),
+    };
+  }
+
+  const title = 'Campus & Classroom Mentorship';
+  const text = [coaching.officeHours, coaching.address]
+    .map((part) => (part || '').trim())
+    .filter(Boolean)
+    .join(' · ');
+
+  return {
+    title,
+    text,
+    visible: Boolean(title || text),
+  };
+}
+
 
 
 

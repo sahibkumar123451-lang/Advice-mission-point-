@@ -3,14 +3,12 @@ import type { CoachingInfo, SocialLinks } from '../types/coaching';
 interface FooterProps {
   coaching: CoachingInfo;
   socialLinks: SocialLinks;
-  onAskDoubtClick: () => void;
   onOpenAdminClick: () => void;
 }
 
 export function Footer({
   coaching,
   socialLinks,
-  onAskDoubtClick,
   onOpenAdminClick,
 }: FooterProps) {
   return (
@@ -34,7 +32,7 @@ export function Footer({
               </div>
             </div>
             <p className="mt-3 text-sm text-slate-400 leading-relaxed max-w-sm">
-              {coaching.address} · Class 1 to Class 12 academic guidance, Daily Updates, bilingual Learning Hub, Campus Gallery, and Mission AI doubt support.
+              {coaching.address} · Class 1 to Class 12 academic guidance, Daily Updates, bilingual Learning Hub, and Campus Gallery.
             </p>
           </div>
 
@@ -61,15 +59,6 @@ export function Footer({
               </a>
             </div>
             <div>
-              <button
-                type="button"
-                onClick={onAskDoubtClick}
-                className="hover:text-blue-400 transition-colors cursor-pointer"
-              >
-                Mission AI Assistant
-              </button>
-            </div>
-            <div>
               <a href="#gallery" className="hover:text-blue-400 transition-colors">
                 Photo &amp; Video Gallery
               </a>
@@ -81,13 +70,13 @@ export function Footer({
             </div>
             <div>
               <a href="#contact" className="hover:text-blue-400 transition-colors">
-                Enquiry &amp; Contact
+                Contact &amp; Location
               </a>
             </div>
           </div>
 
-          <div className="md:col-span-4 space-y-2 text-sm">
-            <div className="font-semibold text-white mb-2">Connect &amp; Manage</div>
+          <div className="md:col-span-4 space-y-3 text-sm">
+            <div className="font-semibold text-white">Connect &amp; Manage</div>
             <div className="flex flex-wrap gap-x-5 gap-y-2">
               <a
                 href={socialLinks.whatsapp}
@@ -122,7 +111,7 @@ export function Footer({
                 YouTube
               </a>
             </div>
-            <div className="pt-2">
+            <div>
               <a
                 href={coaching.googleMapsUrl}
                 target="_blank"
@@ -132,11 +121,11 @@ export function Footer({
                 Open Campus Location in Google Maps
               </a>
             </div>
-            <div className="pt-2">
+            <div className="pt-1">
               <button
                 type="button"
                 onClick={onOpenAdminClick}
-                className="text-xs font-semibold text-red-400 hover:text-red-300 underline underline-offset-4 cursor-pointer"
+                className="inline-flex items-center justify-center h-9 px-4 text-xs font-semibold text-red-300 bg-red-500/10 border border-red-500/35 hover:bg-red-500/20 hover:text-red-200 rounded-lg transition-colors cursor-pointer"
               >
                 Open Admin Panel
               </button>

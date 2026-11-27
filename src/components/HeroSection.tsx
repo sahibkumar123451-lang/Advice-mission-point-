@@ -1,18 +1,19 @@
 import { ArrowRight, MapPin } from 'lucide-react';
 import type { CoachingInfo } from '../types/coaching';
+import { resolveHeroCaptionDisplay } from '../utils/coachingLogic';
 import { ResilientImage } from './ResilientImage';
 
 interface HeroSectionProps {
   coaching: CoachingInfo;
-  onAskQuestionClick: () => void;
 }
 
-export function HeroSection({ coaching, onAskQuestionClick }: HeroSectionProps) {
+export function HeroSection({ coaching }: HeroSectionProps) {
   const defaultHeroImage = '/src/assets/images/hero_coaching_campus_1795115509590.jpg';
   const resolvedHeroUrl =
     coaching.heroMediaUrl !== undefined ? coaching.heroMediaUrl.trim() : defaultHeroImage;
   const hasHeroMedia = Boolean(resolvedHeroUrl);
   const isHeroVideo = coaching.heroMediaType === 'video' || /\.(mp4|webm|mov|m4v)$/i.test(resolvedHeroUrl);
+  const heroCaption = resolveHeroCaptionDisplay(coaching);
 
   return (
     <section
@@ -54,28 +55,27 @@ export function HeroSection({ coaching, onAskQuestionClick }: HeroSectionProps) 
               {coaching.welcomeSubtitle}
             </p>
 
-            <div className="mt-8 flex flex-wrap items-center gap-4">
-              <button
-                type="button"
-                onClick={onAskQuestionClick}
-                className="inline-flex items-center gap-2 px-6 py-3 text-sm sm:text-base font-semibold text-white bg-blue-600 hover:bg-blue-500 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 focus-visible:ring-offset-[#09090B]"
-              >
-                <span>Ask Mission AI</span>
-                <ArrowRight className="w-4 h-4" aria-hidden="true" />
-              </button>
-
+            <div className="mt-8 grid grid-cols-1 sm:flex sm:flex-wrap items-stretch sm:items-center gap-3">
               <a
                 href="#daily-updates"
-                className="inline-flex items-center gap-1.5 px-5 py-3 text-sm sm:text-base font-semibold text-slate-100 bg-[#141720] border border-zinc-700 hover:border-red-500/60 hover:bg-zinc-900 rounded-lg transition-colors whitespace-nowrap shrink-0"
+                className="inline-flex items-center justify-center gap-2 h-11 px-5 text-sm sm:text-base font-semibold text-white bg-blue-600 hover:bg-blue-500 rounded-lg transition-colors whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 focus-visible:ring-offset-[#09090B]"
               >
-                Daily Updates
+                <span>Daily Updates</span>
+                <ArrowRight className="w-4 h-4" aria-hidden="true" />
               </a>
 
               <a
                 href="#learning-hub"
-                className="inline-flex items-center gap-1.5 px-5 py-3 text-sm sm:text-base font-semibold text-slate-300 bg-transparent border border-zinc-800 hover:border-zinc-600 hover:text-white rounded-lg transition-colors whitespace-nowrap shrink-0"
+                className="inline-flex items-center justify-center gap-2 h-11 px-5 text-sm sm:text-base font-semibold text-slate-100 bg-[#141720] border border-zinc-700 hover:border-red-500/60 hover:bg-zinc-900 rounded-lg transition-colors whitespace-nowrap shrink-0"
               >
                 Explore Learning Hub
+              </a>
+
+              <a
+                href="#contact"
+                className="inline-flex items-center justify-center gap-2 h-11 px-5 text-sm sm:text-base font-semibold text-slate-200 bg-[#111318] border border-zinc-800 hover:border-zinc-600 hover:text-white rounded-lg transition-colors whitespace-nowrap shrink-0"
+              >
+                Contact Us
               </a>
             </div>
 
@@ -95,7 +95,7 @@ export function HeroSection({ coaching, onAskQuestionClick }: HeroSectionProps) 
               <div>
                 <div className="text-xs font-medium text-slate-400">Doubt Support</div>
                 <div className="mt-1 text-base font-bold text-blue-400">
-                  Classroom &amp; Mission AI
+                  Classroom &amp; Notes
                 </div>
               </div>
             </div>
@@ -122,14 +122,27 @@ export function HeroSection({ coaching, onAskQuestionClick }: HeroSectionProps) 
                     className="w-full h-full object-cover lg:h-full"
                   />
                 )}
-                <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/90 via-black/55 to-transparent p-6 text-white">
-                  <p className="text-xs font-semibold text-red-400 uppercase tracking-wider">
-                    Campus &amp; Classroom Mentorship
-                  </p>
-                  <p className="mt-1 text-sm sm:text-base font-semibold text-slate-100 leading-snug">
-                    {coaching.officeHours} · {coaching.address}
-                  </p>
-                </div>
+                {heroCaption.visible && (
+                  <div
+                    data-testid="hero-photo-caption"
+                    className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/90 via-black/55 to-transparent p-6 text-white"
+                  >
+                    {heroCaption.title && (
+                      <p className="text-xs font-semibold text-red-400 uppercase tracking-wider">
+                        {heroCaption.title}
+                      </p>
+                    )}
+                    {heroCaption.text && (
+                      <p
+                        className={`${
+                          heroCaption.title ? 'mt-1 ' : ''
+                        }text-sm sm:text-base font-semibold text-slate-100 leading-snug`}
+                      >
+                        {heroCaption.text}
+                      </p>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
           )}

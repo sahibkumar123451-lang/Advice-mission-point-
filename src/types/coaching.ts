@@ -25,6 +25,8 @@ export interface CoachingInfo {
   officeHours: string;
   heroMediaUrl?: string;
   heroMediaType?: 'image' | 'video';
+  heroCaptionTitle?: string;
+  heroCaptionText?: string;
 }
 
 export interface SocialLinks {
@@ -38,6 +40,7 @@ export interface TeacherProfile {
   name: string;
   roleTitle: string;
   photoUrl: string;
+  photoCaption?: string;
   introduction: string;
   qualifications: string;
   experience: string;

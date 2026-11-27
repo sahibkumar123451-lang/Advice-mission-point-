@@ -54,7 +54,7 @@ export function AboutSection({ coaching }: AboutSectionProps) {
                   <span className="text-red-400">03.</span> Continuous Doubt Help
                 </h3>
                 <p className="mt-1.5 text-sm text-slate-400 leading-relaxed">
-                  Direct classroom mentorship supported by Mission AI and our curated Learning Hub notes whenever you study at home.
+                  Direct classroom mentorship supported by our curated Learning Hub notes and Daily Updates whenever you study at home.
                 </p>
               </div>
             </div>
@@ -108,21 +108,21 @@ export function AboutSection({ coaching }: AboutSectionProps) {
                 </div>
               </dl>
 
-              <div className="mt-7 pt-6 border-t border-zinc-800 flex flex-wrap gap-3">
+              <div className="mt-7 pt-6 border-t border-zinc-800 grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <a
                   href={coaching.googleMapsUrl}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="inline-flex items-center justify-center gap-2 w-full sm:w-auto px-5 py-2.5 text-sm font-semibold text-white bg-blue-600 hover:bg-blue-500 rounded-lg transition-colors whitespace-nowrap"
+                  className="inline-flex items-center justify-center gap-2 h-11 px-4 text-sm font-semibold text-white bg-blue-600 hover:bg-blue-500 rounded-lg transition-colors whitespace-nowrap"
                 >
                   <span>Open in Google Maps</span>
-                  <ExternalLink className="w-4 h-4" aria-hidden="true" />
+                  <ExternalLink className="w-4 h-4 shrink-0" aria-hidden="true" />
                 </a>
                 <a
                   href="#contact"
-                  className="inline-flex items-center justify-center w-full sm:w-auto px-5 py-2.5 text-sm font-semibold text-slate-200 bg-[#09090B] border border-zinc-700 hover:border-zinc-500 rounded-lg transition-colors whitespace-nowrap"
+                  className="inline-flex items-center justify-center h-11 px-4 text-sm font-semibold text-slate-200 bg-[#09090B] border border-zinc-700 hover:border-zinc-500 rounded-lg transition-colors whitespace-nowrap"
                 >
-                  Send Enquiry
+                  Contact &amp; Socials
                 </a>
               </div>
             </div>

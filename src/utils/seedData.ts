@@ -18,6 +18,8 @@ export const DEFAULT_SITE_DATA: SiteData = {
     officeHours: 'Mon – Sat · 6:30 AM – 6:30 PM',
     heroMediaUrl: '/src/assets/images/hero_coaching_campus_1795115509590.jpg',
     heroMediaType: 'image',
+    heroCaptionTitle: 'Campus & Classroom Mentorship',
+    heroCaptionText: 'Mon – Sat · 6:30 AM – 6:30 PM · Ramauli, Darbhanga, Bihar, India 847101',
   },
   socialLinks: {
     whatsapp: 'https://wa.me/919800000000',
@@ -29,6 +31,7 @@ export const DEFAULT_SITE_DATA: SiteData = {
     name: 'Mentor Name (Editable Placeholder)',
     roleTitle: 'Founder & Lead Educator — Advice Coaching Classes',
     photoUrl: '/src/assets/images/teacher_portrait_1795115509637.jpg',
+    photoCaption: '',
     introduction:
       'Dedicated educator committed to transforming everyday student effort into confident academic performance. Passionate about breaking complex concepts into clear, relatable Hindi and English explanations for learners across Class 1 to Class 12.',
     qualifications: 'M.Sc., B.Ed. (Replace with actual degree details in Admin Panel)',
@@ -168,7 +171,7 @@ export const DEFAULT_SITE_DATA: SiteData = {
       id: 'upd-weekly-test-schedule',
       title: 'Weekly Revision & Doubt-Clearing Session Schedule',
       description:
-        'Every Saturday features dedicated Mathematics & Science problem-solving sessions along with Mission AI revision support for home study.',
+        'Every Saturday features dedicated Mathematics & Science problem-solving sessions along with bilingual Learning Hub notes for home study.',
       date: '2026-11-20',
       mediaType: 'none',
       published: true,

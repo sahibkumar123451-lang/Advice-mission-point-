@@ -267,14 +267,14 @@ export function FeedbackRatingSection() {
                           onClick={() => setRating(starValue)}
                           aria-label={`Rate ${starValue} out of 5 stars`}
                           aria-pressed={rating === starValue}
-                          className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border transition-colors cursor-pointer ${
+                          className={`inline-flex items-center justify-center gap-1.5 min-w-[54px] h-10 px-3 rounded-lg border transition-colors cursor-pointer ${
                             active
                               ? 'bg-red-500/15 border-red-500/60 text-amber-400'
                               : 'bg-[#09090B] border-zinc-700 text-slate-400 hover:border-zinc-600'
                           }`}
                         >
                           <Star
-                            className={`w-4 h-4 ${active ? 'fill-amber-400 text-amber-400' : 'text-slate-500'}`}
+                            className={`w-4 h-4 shrink-0 ${active ? 'fill-amber-400 text-amber-400' : 'text-slate-500'}`}
                             aria-hidden="true"
                           />
                           <span className="text-xs font-bold tabular-nums">{starValue}</span>
@@ -331,10 +331,10 @@ export function FeedbackRatingSection() {
                 <button
                   type="submit"
                   disabled={submitting}
-                  className="inline-flex items-center justify-center gap-2 w-full sm:w-auto px-6 py-2.5 text-sm font-semibold text-white bg-blue-600 hover:bg-blue-500 disabled:opacity-60 rounded-lg transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+                  className="inline-flex items-center justify-center gap-2 w-full sm:w-auto h-11 px-6 text-sm font-semibold text-white bg-blue-600 hover:bg-blue-500 disabled:opacity-60 rounded-lg transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
                 >
                   <span>{submitting ? 'Submitting Feedback...' : 'Submit Feedback & Rating'}</span>
-                  <Send className="w-4 h-4" aria-hidden="true" />
+                  <Send className="w-4 h-4 shrink-0" aria-hidden="true" />
                 </button>
               </form>
             </div>
